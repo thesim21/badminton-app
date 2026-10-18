@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.github.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>ก๊วนแบด · ผู้จัดก๊วน</title>
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest-org.json">
+<meta name="theme-color" content="#0F7A55">
+<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ผู้จัดก๊วน"><link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="icon" href="icon-192.png">
+</head><body data-page="index">
+<div id="orgShell" hidden>
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <div class="logo">
+        <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="9" fill="var(--accent)"/><path d="M17 23 L10 9 M17 23 L14 8 M17 23 L20 8 M17 23 L24 9" stroke="var(--accent-ink)" stroke-width="1.6" stroke-linecap="round"/><path d="M10 9 Q17 5 24 9" stroke="var(--accent-ink)" stroke-width="1.6" fill="none"/><circle cx="17" cy="25" r="3.2" fill="var(--accent-ink)"/></svg>
+        <div><h1 id="gName">Badminton Group Organizer</h1><small id="connNote">กำลังเชื่อมต่อ…</small></div>
+      </div>
+      <span class="sp"></span>
+      <span class="clock num clockTxt"></span>
+      <span class="role org">แอปผู้จัดก๊วน</span>
+      <button class="sm" id="roleSwitch">เปิดหน้าผู้เล่น ↗</button>
+      <div class="sesspick"><select id="sessSel" aria-label="เลือกรอบเล่น"></select></div>
+    </div>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+  </div>
+</header>
+
+<main id="view"></main>
+
+</div>
+<div id="plShell" hidden>
+<header class="ptop">
+  <div class="ptop-in">
+    <div class="logo">
+      <svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="9" fill="var(--accent)"/><path d="M17 23 L10 9 M17 23 L14 8 M17 23 L20 8 M17 23 L24 9" stroke="var(--accent-ink)" stroke-width="1.6" stroke-linecap="round"/><path d="M10 9 Q17 5 24 9" stroke="var(--accent-ink)" stroke-width="1.6" fill="none"/><circle cx="17" cy="25" r="3.2" fill="var(--accent-ink)"/></svg>
+      <div><h1 id="pgName">Badminton Group Organizer</h1><small><span class="role">แอปผู้เล่น</span> <span id="pConn"></span></small></div>
+    </div>
+    <button class="pme" id="pMe" type="button" aria-label="โปรไฟล์ของฉัน"></button>
+  </div>
+  <div class="ptop-in sub"><select id="pSess" aria-label="เลือกรอบเล่น"></select><span class="clock num clockTxt"></span></div>
+  <div class="orgbar" id="pOrgBar" hidden><span>คุณคือผู้จัดก๊วน กำลังดูหน้าผู้เล่น</span><button class="sm" id="pBack" type="button">กลับแอปผู้จัด</button></div>
+</header>
+<main id="pview" class="pmain"></main>
+<nav class="pnav" id="pNav" aria-label="เมนูผู้เล่น"></nav>
+</div>
+<div class="ov" id="ov" hidden><div class="dlg" id="dlg" role="dialog" aria-modal="true"></div></div>
+<div class="toast" id="toast" hidden></div>
+<script src="ghstore.js"></script>
+<script src="core.js"></script>
+<script src="organizer.js"></script>
+<script src="player.js"></script>
+<script src="ghui.js"></script>
+<script src="boot.js"></script>
+</body></html>
