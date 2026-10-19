@@ -58,7 +58,7 @@ function lput(path,data){
   if(data==null)delete local[path];else local[path]=JSON.parse(JSON.stringify(data));
   const prev=before;
   try{if(data==null)localStorage.removeItem(LP+path);else localStorage.setItem(LP+path,JSON.stringify(data));}
-  catch(e){if(prev===undefined)delete local[path];else local[path]=prev;throw new Error("พื้นที่เก็บข้อมูลในเครื่องเต็ม — ลบโพสต์ที่มีรูปหรือส่งออกข้อมูลแล้วล้างรอบเก่า");}
+  catch(e){if(prev===undefined)delete local[path];else local[path]=prev;throw new Error("พื้นที่เก็บข้อมูลในเครื่องเต็ม — ดาวน์โหลดไฟล์สำรองที่หน้าตั้งค่า แล้วลบโพสต์ที่มีรูป");}
   lastSig=lsig();lnotify();
 }
 /* Live sync between pages/tabs/phones on the same device: pick up what others saved, without refresh. */
@@ -109,7 +109,10 @@ function delDoc(path){
 }
 function dbErr(e){console.warn(e);if(e&&e.code&&e.code!=="invalid_argument")toast("การเชื่อมต่อข้อมูลขัดข้อง: "+(e.message||e.code));}
 async function write(path,data,okMsg){
-  try{await setDoc(path,data);if(okMsg)toast(okMsg);return true;}
+  try{await setDoc(path,data);if(okMsg)toast(okMsg);
+    // a closed round's frozen summary follows later corrections and payments (the organizer's phone keeps it in step)
+    if(DB.isOrg&&typeof refreshSummary==="function"&&/\/(pay|matches)\//.test(path)&&path.startsWith("sessions/")){const cs=curSession();if(cs&&cs.status==="closed"&&path.startsWith("sessions/"+cs.id+"/"))refreshSummary();}
+    return true;}
   catch(e){if(e&&e.code==="invalid_argument"){
       if(!DB.isOrg&&DB.mode==="db"){DB.viewOnly=true;render();toast("บัญชีของคุณดูข้อมูลได้อย่างเดียว — ให้ผู้จัดเพิ่มชื่อและบันทึกแทน หรือขอสิทธิ์ Contributor");}
       else toast("คุณไม่มีสิทธิ์บันทึกส่วนนี้");}else toast("บันทึกไม่สำเร็จ: "+(e&&e.message||"ลองอีกครั้ง"));return false;}
@@ -133,8 +136,23 @@ window.addEventListener("hashchange",()=>{if(PAGE()!=="index")return;const want=
 /* ================= state ================= */
 const S={notes:[],cfg:null,sessions:[],selfDocs:[],posts:[],slips:[],mod:null,inv:null,members:[],
   sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null};
-const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0};
+const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2};
 const cfg=()=>({...CFG_DEF,...(S.cfg||{})});
+/* ---- game structure: sets per game · who started a game vs who only helped ---- */
+function setsOf(s){const n=s&&+s.sets>0?+s.sets:+cfg().setsPerGame;return n>0?Math.min(9,Math.round(n)):2;}
+const matchOnCourt=m=>[...((m&&m.a)||[]),...((m&&m.b)||[])];
+/* the four who started the game (m.orig is kept the first time somebody is swapped out of a running game) */
+const matchStarters=m=>{const o=m&&m.orig?m.orig:m;return [...((o&&o.a)||[]),...((o&&o.b)||[])];};
+/* substitutes who came in to a running game: they helped, so they are not charged for that game's shuttles */
+function matchHelpers(m){const st=new Set(matchStarters(m));return [...new Set([...matchOnCourt(m),...((m&&m.subs)||[]).filter(x=>x.live).map(x=>x.in)])].filter(id=>id&&!st.has(id));}
+const matchEveryone=m=>[...new Set([...matchStarters(m),...matchOnCourt(m),...matchHelpers(m)])];
+function matchTimes(m){const stopAt={},joinAt={};(m.subs||[]).forEach(x=>{if(!x.live)return;stopAt[x.out]=x.at;joinAt[x.in]=x.at;delete stopAt[x.in];});return {stopAt,joinAt};}
+function setsResult(sets){let a=0,b=0,d=0;(sets||[]).forEach(x=>{if(x&&x.w==="a")a++;else if(x&&x.w==="b")b++;else if(x&&x.w==="d")d++;});const n=a+b+d;return {a,b,d,n,winner:!n?"":a>b?"a":b>a?"b":"draw"};}
+function resultText(m){
+  if(!m.winner)return "ไม่บันทึกผล";
+  const r=m.sets&&m.sets.length?setsResult(m.sets):null,sc=r&&(r.a||r.b)?` ${r.a}–${r.b}`:"";
+  return m.winner==="a"?`ฝั่งซ้ายชนะ${sc}`:m.winner==="b"?`ฝั่งขวาชนะ${sc}`:`เสมอ${sc}`;}
+const resultCls=m=>m.winner==="draw"?"s-queued":m.winner?"s-ready":"s-off";
 let tab="courts";
 let sessSubs=[];
 let myIdentity=null; // for view-only players: chosen roster id
@@ -152,7 +170,8 @@ function rosterModel(){
   const trustAt=(id,claim)=>{const w=seen[id];return w&&w.claim===claim&&w.at?+w.at:Math.max(+claim||0,lastSeen+1);};
   const trustCi=(id,claim)=>{if(!claim)return null;const w=seen[id];return w&&w.ci===claim&&w.ciAt?+w.ciAt:Math.max(+claim,lastSeen+1);};
   S.selfDocs.forEach(d=>{const su=d.signups&&d.signups[s.id];if(!su)return;
-    if(su.cancelled){cancelledAt[d.id]=su.cancelledAt||Infinity;return;}
+    if(su.cancelled){const dl0=checkinDeadline(s);
+      if(!(dl0&&+su.cancelledAt>dl0&&!su.checkedInAt&&!S.roster.some(r=>r.id===d.id&&r.checkedInAt))){cancelledAt[d.id]=su.cancelledAt||Infinity;return;}}   // cancelled after the check-in deadline = no-show, not a free cancel
     map[d.id]={id:d.id,name:d.name||"ผู้เล่น",skill:sk(d.skill),account:true,signupAt:trustAt(d.id,su.at),claimAt:Math.max(+su.at||0,+s.createdAt||0),selfCheckIn:trustCi(d.id,su.checkedInAt),selfCheckOut:+su.checkedOutAt||null};});
   S.roster.forEach(r=>{
     // the player cancelled after the organizer touched their row: the cancel wins unless the organizer re-added/checked them in later
@@ -178,8 +197,9 @@ function rosterModel(){
   /* NO-SHOW: after the check-in deadline, confirmed players who have not checked in lose their place.
      Places go to checked-in players: those who arrived on time first, then latecomers and reserves in the order they checked in. */
   const dl=checkinDeadline(s);list.deadline=dl;list.openSlots=0;
-  if(dl&&now()>dl&&s.status!=="closed"){
-    const played=new Set(S.matches.filter(m=>m.status!=="cancelled").flatMap(m=>[...m.a,...m.b]));
+  const asOf=s.status==="closed"?Math.min(now(),+s.closedAt||sessEndEpoch(s)||0):now();    // a closed round keeps the no-shows it had when it closed
+  if(dl&&asOf>dl){
+    const played=new Set(S.matches.filter(m=>m.status!=="cancelled").flatMap(m=>matchEveryone(m)));
     const fixed=p=>p.override||p.checkedInAt||played.has(p.id);
     let n2=list.filter(p=>p.status==="confirmed"&&fixed(p)).length;
     list.filter(p=>!fixed(p)&&p.checkedIn).sort((a,b)=>((a.origConfirmed&&a.ciAt<=dl)?0:1)-((b.origConfirmed&&b.ciAt<=dl)?0:1)||a.ciAt-b.ciAt)
@@ -194,17 +214,23 @@ function checkinDeadline(s){const m=+cfg().noShowMin||0;if(!m||!s||!s.date||!s.s
   const [y,mo,d]=s.date.split("-").map(Number);const [h,mi]=s.start.split(":").map(Number);return new Date(y,mo-1,d,h,mi).getTime()+m*MIN;}
 function playerStats(){
   const r=cfg().restMin*MIN,st={};
-  const g=id=>st[id]||(st[id]={games:0,wins:0,losses:0,minutes:0,lastEnd:0,restUntil:0,inMatch:null,partners:[]});
+  const g=id=>st[id]||(st[id]={games:0,wins:0,losses:0,draws:0,helps:0,minutes:0,lastEnd:0,restUntil:0,inMatch:null,partners:[]});
+  const stop=(x,at)=>{if(at>(x.lastEnd||0)){x.lastEnd=at;x.restUntil=at+r;}};
   S.matches.forEach(m=>{
-    const all=[...(m.a||[]),...(m.b||[])];
-    all.forEach(id=>{const x=g(id);
-      if(m.status==="playing"||m.status==="queued"){if(!x.inMatch||m.status==="playing")x.inMatch=m;}
-      if(m.status==="done"){x.games++;x.minutes+=Math.max(0,Math.round(((m.endAt||0)-(m.startAt||0))/MIN));
-        if(m.winner){const inA=(m.a||[]).includes(id);if((m.winner==="a")===inA)x.wins++;else x.losses++;}
-        if((m.endAt||0)>x.lastEnd){x.lastEnd=m.endAt;x.restUntil=m.endAt+r;}
-        const team=(m.a||[]).includes(id)?m.a:m.b;team.forEach(o=>{if(o!==id)x.partners.push({id:o,at:m.endAt||0});});
-      }
-    });
+    const on=new Set(matchOnCourt(m)),starters=matchStarters(m),helpers=matchHelpers(m),{stopAt,joinAt}=matchTimes(m);
+    on.forEach(id=>{const x=g(id);if(m.status==="playing"||m.status==="queued"){if(!x.inMatch||m.status==="playing")x.inMatch=m;}});
+    if(m.status==="playing"){Object.entries(stopAt).forEach(([id,at])=>{if(!on.has(id))stop(g(id),at);});}   // swapped out of a running game: rest starts then
+    if(m.status!=="done")return;
+    const o=m.orig||m,teamA=o.a||[],teamB=o.b||[];
+    starters.forEach(id=>{const x=g(id);x.games++;
+      const end=on.has(id)?(m.endAt||0):(stopAt[id]||m.endAt||0);
+      x.minutes+=Math.max(0,Math.round((end-(m.startAt||0))/MIN));
+      if(m.winner==="draw")x.draws++;
+      else if(m.winner){const inA=teamA.includes(id);if((m.winner==="a")===inA)x.wins++;else x.losses++;}
+      stop(x,end);
+      (teamA.includes(id)?teamA:teamB).forEach(p=>{if(p!==id)x.partners.push({id:p,at:m.endAt||0});});});
+    helpers.forEach(id=>{const x=g(id);x.helps++;const end=on.has(id)?(m.endAt||0):(stopAt[id]||m.endAt||0);
+      x.minutes+=Math.max(0,Math.round((end-(joinAt[id]||m.startAt||0))/MIN));stop(x,end);});
   });
   return {get:g};
 }
@@ -292,7 +318,7 @@ function generateMatches(){
     const fixed=new Set([...a,...b]);
     const need=4-fixed.size;
     // keep players of a still-unused opponent request out of this game when possible, so their request can be honoured next
-    const held=new Set();reqs.filter(r=>r.type==="opponent"&&!reqIds.includes(r.id)&&!used.has(r.from)&&!used.has(r.to)).forEach(r=>{held.add(r.from);held.add(r.to);});
+    const held=new Set();reqs.filter(r=>r.type==="opponent"&&!reqIds.includes(r.id)&&!used.has(r.from)&&!used.has(r.to)&&elig.some(p=>p.id===r.from)&&elig.some(p=>p.id===r.to)).forEach(r=>{held.add(r.from);held.add(r.to);});
     let cand=pool.filter(p=>!fixed.has(p.id)&&!held.has(p.id));
     if(cand.length<need)cand=pool.filter(p=>!fixed.has(p.id));
     cand=cand.slice(0,Math.min(8,cand.length));
@@ -342,7 +368,7 @@ function sessionCard(s){
     <div class="small">${esc(fmtD(s.date))} · ${esc(s.start||"")}–${esc(s.end||"")} · ${(s.courts||[]).length} คอร์ด (${(s.courts||[]).map(esc).join(", ")}) · รับ ${s.maxPlayers||"-"} คน · ลงชื่อแล้ว ${conf} คน${roster.filter(p=>p.status==="reserve").length?` + สำรอง ${roster.filter(p=>p.status==="reserve").length}`:""}</div>
     <div class="bar"><span style="width:${Math.min(100,conf/Math.max(1,s.maxPlayers||1)*100)}%"></span></div>
     ${s.desc?`<p class="small" style="margin:0;white-space:pre-wrap">${esc(s.desc)}</p>`:""}
-    <div class="small muted">ค่าสนาม ${baht(cfg().playerCourtFee)} ฿/คน + ค่าลูก ${baht(cfg().shuttleFee)} ฿/ลูก${cfg().shuttleSplit==="shared"?" (หาร 4 คนในเกม)":" ต่อคน"} · ลูกซ่อมไม่คิดเงิน</div></div>`;
+    <div class="small muted">ค่าสนาม ${baht(cfg().playerCourtFee)} ฿/คน + ค่าลูก ${unit(cfg().shuttleFee)} ฿/ลูก${cfg().shuttleSplit==="shared"?" (หาร 4 คนในเกม)":" ต่อคน"} · ลูกซ่อมไม่คิดเงิน</div></div>`;
 }
 
 function reqTable(list,org){
@@ -350,51 +376,73 @@ function reqTable(list,org){
   const conflict=r=>{const msgs=[];[r.from,r.to].forEach(id=>{const p=roster.find(x=>x.id===id);if(!p){msgs.push(`${nameOf(id)} ไม่อยู่ในรายชื่อ`);return;}const st=statusOf(p,ps,t);if(st.k==="off")msgs.push(`${p.name}: ${st.t}`);if(st.k==="rest")msgs.push(`${p.name} ยังพัก`);if(st.k==="play")msgs.push(`${p.name} กำลังเล่น`);});
     const dup=list.filter(x=>x!==r&&x.status!=="rejected"&&x.status!=="cancelled"&&x.type==="partner"&&r.type==="partner"&&(x.from===r.from||x.to===r.from||x.from===r.to||x.to===r.to)&&!(x.from===r.to&&x.to===r.from));if(dup.length)msgs.push("มีคำขอคู่ซ้อนกัน");return msgs;};
   const sc={pending:["s-warn","รอพิจารณา"],accepted:["s-ready","อนุมัติแล้ว"],rejected:["s-bad","ปฏิเสธ"],cancelled:["s-off","ยกเลิก"]};
-  return `<div class="tw"><table><thead><tr><th>เวลา</th><th>จาก</th><th>ประเภท</th><th>ถึง</th><th>สถานะ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>${list.map(r=>{const c=r.status==="pending"?conflict(r):[];
-    return `<tr class="${r.status==="cancelled"?"dim":""}"><td class="num small">${r.at?hm(r.at):""}</td><td>${esc(nameOf(r.from))}</td><td>${r.type==="partner"?"ขอเป็นคู่":"ขอเป็นคู่แข่ง"}</td><td>${esc(nameOf(r.to))}</td>
-      <td><span class="chip ${sc[r.status][0]}">${sc[r.status][1]}</span>${r.fulfilled?' <span class="chip s-play">จัดลงแมตช์แล้ว</span>':""}</td>
-      <td class="small">${c.length?`<span style="color:var(--warn)">${c.map(esc).join(" · ")}</span>`:esc(r.note||"")}${r.byOrg?' <span class="muted">(ผู้จัดบันทึก)</span>':""}</td>
-      <td><div class="acts">${org&&r.status==="pending"?`<button class="primary sm" data-act="reqAccept" data-id="${esc(r.id)}">อนุมัติ</button><button class="danger sm" data-act="reqReject" data-id="${esc(r.id)}">ปฏิเสธ</button>`:""}${!org&&r.status==="pending"&&r.from===DB.uid?`<button class="ghost sm" data-act="reqCancel" data-id="${esc(r.id)}">ยกเลิก</button>`:""}</div></td></tr>`;}).join("")}</tbody></table></div>`;
+  const typeTxt=r=>r.type==="partner"?"ขอเป็นคู่":"ขอเป็นคู่แข่ง";
+  return `<div class="tw"><table class="reqtbl"><thead><tr><th>เวลา</th><th>จาก</th><th>ประเภท</th><th>ถึง</th><th>สถานะ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>${list.map(r=>{const c=r.status==="pending"?conflict(r):[];
+    const acts=`${org&&r.status==="accepted"&&!r.fulfilled&&!r.hiddenMirror?`<button class="ghost sm" data-act="reqReject" data-id="${esc(r.id)}">เพิกถอน</button>`:""}${org&&r.status==="pending"?`<button class="primary sm" data-act="reqAccept" data-id="${esc(r.id)}">อนุมัติ</button><button class="danger sm" data-act="reqReject" data-id="${esc(r.id)}">ปฏิเสธ</button>`:""}${!org&&r.status==="pending"&&r.from===DB.uid?`<button class="ghost sm" data-act="reqCancel" data-id="${esc(r.id)}">ยกเลิก</button>`:""}`;
+    const note=`${c.length?`<span style="color:var(--warn)">${c.map(esc).join(" · ")}</span>`:esc(r.note||"")}${r.byOrg?' <span class="muted">(ผู้จัดบันทึก)</span>':""}`;
+    return `<tr class="${r.status==="cancelled"?"dim":""}"><td class="num small c-time">${r.at?hm(r.at):""}</td><td class="c-from">${esc(nameOf(r.from))}</td><td class="c-type">${typeTxt(r)}</td><td class="c-to">${esc(nameOf(r.to))}</td>
+      <td class="c-who"><b>${esc(nameOf(r.from))}</b> ${typeTxt(r)} <b>${esc(nameOf(r.to))}</b>${r.at?` <span class="small muted">· ${hm(r.at)}</span>`:""}</td>
+      <td class="c-st"><span class="chip ${sc[r.status][0]}">${sc[r.status][1]}</span>${r.fulfilled?' <span class="chip s-play">จัดลงแมตช์แล้ว</span>':""}</td>
+      <td class="small c-note">${note}</td>
+      <td class="c-act">${acts?`<div class="acts">${acts}</div>`:""}</td></tr>`;}).join("")}</tbody></table></div>`;
 }
-/* Pricing (what players pay): flat court fee per player + shuttle fee for every NEW shuttle used in games they played.
+/* Pricing (what players pay): flat court fee per player + shuttle fee for every NEW shuttle used in games they STARTED (injured/left early still pays; a substitute who came in mid-game does not).
    Repair shuttles (ลูกซ่อม) are never charged to players. Organizer P&L = what players owe − court rental − shuttle cost − other costs. */
 function sessHours(s){let d=toMin(s.end)-toMin(s.start);if(d<=0)d+=24*60;return d/60;}   // 21:00–01:00 = 4 h
+const sessStartEpoch=s=>{if(!s||!s.date||!s.start)return 0;const [y,mo,d]=s.date.split("-").map(Number),[h,mi]=s.start.split(":").map(Number);return new Date(y,mo-1,d,h,mi).getTime();};
+/* booked end time as a timestamp (21:00–01:00 ends the next day); 0 when the round has no end time */
+const sessEndEpoch=s=>{const st=sessStartEpoch(s);return st&&s&&s.end?st+sessHours(s)*3600000:0;};
+/* prices a round is billed with: live settings while it is open, frozen copy (priceSnap) once it is closed */
+const PRICE_KEYS=["playerCourtFee","shuttleFee","shuttleSplit","shuttleCost","repairCost","courtRent","noShowFee"];
+const priceCfg=s=>({...cfg(),...((s&&s.priceSnap)||{})});
+const priceSnapNow=()=>{const c=cfg(),o={};PRICE_KEYS.forEach(k=>{if(c[k]!==undefined)o[k]=c[k];});return o;};
+/* unit prices may have decimals (฿37.50 per shuttle) — show them without rounding to whole baht */
+const unit=n=>{n=+n||0;return Number.isInteger(n)?n.toLocaleString("th-TH"):n.toLocaleString("th-TH",{minimumFractionDigits:2,maximumFractionDigits:2});};
+function courtHoursOf(s,name){
+  const total=sessHours(s)*60,cm=s.courtMeta&&s.courtMeta[name];if(!cm||!cm.from)return total/60;
+  let off=toMin(cm.from)-toMin(s.start);if(off<-180)off+=1440;           // after midnight → next day; up to 3 h before the start counts as full time
+  return Math.max(0,total-Math.max(0,off))/60;}
+const courtHours=s=>(s.courts||[]).reduce((a,n)=>a+courtHoursOf(s,n),0);
 function rentTotal(s){
-  const c=cfg();const courts=(s.courts||[]).length;
-  if(s.courtRent!=null)return courts*sessHours(s)*(+s.courtRent||0);
+  const c=priceCfg(s);const courts=(s.courts||[]).length;
+  if(s.courtRent!=null)return courtHours(s)*(+s.courtRent||0);
   if(s.courtFee)return +s.courtFee;           // older sessions stored one total
-  return courts*sessHours(s)*(+c.courtRent||0);
+  return courtHours(s)*(+c.courtRent||0);
 }
 function payModel(){
   const s=curSession();if(!s)return {rows:[],total:0,shuttles:0,repair:0,part:0,games:0,pnl:null};
-  const c=cfg(),roster=rosterModel(),ps=playerStats();
+  const c=priceCfg(s),roster=rosterModel(),ps=playerStats();
   const done=S.matches.filter(m=>m.status==="done");
   const shuttles=done.reduce((a,m)=>a+(+m.shuttles||0),0);
   const repair=done.reduce((a,m)=>a+(+m.repair||0),0);
   const part=roster.filter(p=>(p.status==="confirmed"&&(p.checkedIn||p.checkedOutAt))||ps.get(p.id).games>0);
   // anyone who appears in a finished game pays, even if they later cancelled or were removed
   const inPart=new Set(part.map(p=>p.id));
-  done.forEach(m=>[...m.a,...m.b].forEach(id=>{if(!inPart.has(id)){inPart.add(id);part.push({id,name:nameOf(id)});}}));
+  done.forEach(m=>matchEveryone(m).forEach(id=>{if(!inPart.has(id)){inPart.add(id);part.push({id,name:nameOf(id)});}}));
   const fee=+c.noShowFee||0;if(fee)roster.filter(p=>p.status==="noshow"&&!inPart.has(p.id)).forEach(p=>{inPart.add(p.id);part.push({...p,noShowRow:true});});
   const games=part.reduce((a,p)=>a+ps.get(p.id).games,0);
   const payMap={};S.pay.forEach(x=>payMap[x.id]=x);
   const slipMap={};S.slips.forEach(x=>{const b=x.bySid&&x.bySid[s.id];if(b)slipMap[x.id]=b;});
   const perShuttle=c.shuttleSplit==="shared"?(+c.shuttleFee||0)/4:(+c.shuttleFee||0);
   const rows=part.map(p=>{
-    const myShuttles=done.filter(m=>[...m.a,...m.b].includes(p.id)).reduce((a,m)=>a+(+m.shuttles||0),0);
+    const myShuttles=done.filter(m=>matchStarters(m).includes(p.id)).reduce((a,m)=>a+(+m.shuttles||0),0);   // the four who started a game pay its shuttles, even if injured and swapped out; substitutes only helped
+    const helped=done.filter(m=>matchHelpers(m).includes(p.id)).length,leftEarly=done.filter(m=>m.orig&&matchStarters(m).includes(p.id)&&!matchOnCourt(m).includes(p.id)).length;
     const noShowPart=p.noShowRow?fee:0;
     const courtPart=p.noShowRow?0:Math.ceil(+c.playerCourtFee||0),shuttlePart=Math.ceil(myShuttles*perShuttle);   // round per part so totals add up exactly
     let due=courtPart+shuttlePart+noShowPart;
-    const ov=payMap[p.id]||{};if(ov.dueOverride!=null)due=ov.dueOverride;
+    const calc=due,ov=payMap[p.id]||{};
+    if(ov.dueAdj!=null)due=calc+(+ov.dueAdj||0);           // "ปรับยอด" is stored as a difference, so games played later are still billed
+    else if(ov.dueOverride!=null)due=ov.dueOverride;      // older rounds: a fixed total
+    const adjusted=ov.dueAdj!=null||ov.dueOverride!=null;
     const nt=((S.notes.find(x=>x.id===p.id)||{}).bySid||{})[s.id]||{};
-    due=Math.ceil(due);
+    due=Math.max(0,Math.ceil(due));
     const slip=slipMap[p.id]||(DB.uid===p.id?((selfSlip()||{}).bySid||{})[s.id]:null);
     let state="unpaid";const paidAmt=ov.paidAmount!=null?+ov.paidAmount:(ov.status==="verified"||ov.status==="cash"?due:0);
     if(ov.status==="rejected"&&!(slip&&slip.at>(ov.at||0))&&paidAmt<due)state="rejected";
     else if(paidAmt>0)state=paidAmt>=due?"paid":(slip&&slip.at>(ov.at||0)?"pending":"partial");
     else if(ov.status==="rejected")state=slip&&slip.at>(ov.at||0)?"pending":"rejected";
     else if(slip)state="pending";
-    return {id:p.id,name:p.name,games:ps.get(p.id).games,myShuttles,courtPart,shuttlePart,noShowPart,due,state,ov,slip,paidAmt,owe:Math.max(0,due-paidAmt),adjReason:nt.adjReason||ov.adjReason||"",rejectNote:nt.rejectNote||ov.note||""};
+    return {id:p.id,name:p.name,games:ps.get(p.id).games,myShuttles,helped,leftEarly,courtPart,shuttlePart,noShowPart,due,calc:Math.ceil(calc),adjusted,state,ov,slip,paidAmt,owe:Math.max(0,due-paidAmt),adjReason:nt.adjReason||ov.adjReason||"",rejectNote:nt.rejectNote||ov.note||""};
   });
   const revCourt=rows.reduce((a,r)=>a+r.courtPart,0),revShuttle=rows.reduce((a,r)=>a+r.shuttlePart,0);
   const revenue=rows.reduce((a,r)=>a+r.due,0);
@@ -402,7 +450,7 @@ function payModel(){
   const rent=rentTotal(s),costNew=shuttles*(+c.shuttleCost||0),costRepair=repair*(+c.repairCost||0),other=+s.otherFee||0;
   const cost=rent+costNew+costRepair+other;
   const pnl={revenue,revCourt,revShuttle,revNoShow:rows.reduce((a,r)=>a+r.noShowPart,0),adjust:revenue-revCourt-revShuttle-rows.reduce((a,r)=>a+r.noShowPart,0),collected,rent,costNew,costRepair,other,cost,
-    profit:revenue-cost,cashProfit:collected-cost,hours:sessHours(s),courts:(s.courts||[]).length,
+    profit:revenue-cost,cashProfit:collected-cost,hours:sessHours(s),courts:(s.courts||[]).length,courtHours:courtHours(s),addedCourts:(s.courts||[]).filter(n=>s.courtMeta&&s.courtMeta[n]&&s.courtMeta[n].from).length,
     rentRate:s.courtRent!=null?+s.courtRent:(s.courtFee?null:+c.courtRent||0),
     breakEven:(+c.playerCourtFee||0)>0?Math.ceil(Math.max(0,rent+other)/(+c.playerCourtFee)):null};
   return {rows,total:revenue,shuttles,repair,part:part.length,games,pnl};
@@ -448,6 +496,14 @@ function checkInt(f,n,req){const el=f.elements[n];const v=el.value.trim();const 
   if(v===""){if(req)return fieldErr(f,n,"กรุณากรอก");return null;}
   if(!/^\d+$/.test(v))return fieldErr(f,n,"ต้องเป็นตัวเลขจำนวนเต็ม");
   if(+v<lo||+v>hi)return fieldErr(f,n,`ต้องอยู่ระหว่าง ${lo}–${hi}`);return +v;}
+/* money with up to 2 decimals (data-dec="min-max") */
+const decIn=(n,lbl,v,min,max,ph)=>`<label class="f">${lbl}<input name="${n}" inputmode="decimal" value="${v??""}" placeholder="${ph||""}" data-dec="${min}-${max}" autocomplete="off"><span class="ferr"></span></label>`;
+function checkDec(f,n,req){const el=f.elements[n];const v=el.value.trim().replace(",",".");const [lo,hi]=el.dataset.dec.split("-").map(Number);
+  if(v===""){if(req)return fieldErr(f,n,"กรุณากรอก");return null;}
+  if(!/^\d+(\.\d{1,2})?$/.test(v))return fieldErr(f,n,"ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง");
+  if(+v<lo||+v>hi)return fieldErr(f,n,`ต้องอยู่ระหว่าง ${lo}–${hi}`);return Math.round(+v*100)/100;}
+document.addEventListener("input",e=>{const el=e.target;if(el.dataset&&el.dataset.dec!==undefined){let v=el.value.replace(",",".").replace(/[^\d.]/g,"");const i=v.indexOf(".");if(i>=0)v=v.slice(0,i+1)+v.slice(i+1).replace(/\./g,"");if(v!==el.value)el.value=v;el.classList.remove("bad");const s=el.parentElement.querySelector(".ferr");if(s)s.textContent="";}});
+document.addEventListener("focusin",e=>{const el=e.target;if(el&&el.tagName==="INPUT"&&el.dataset&&(el.dataset.int!==undefined||el.dataset.dec!==undefined)&&el.value)setTimeout(()=>{try{el.select();}catch(_){}},0);});
 document.addEventListener("input",e=>{const t=e.target;if(t&&t.classList&&t.classList.contains("bad")&&t.dataset.int===undefined){t.classList.remove("bad");const s=t.parentElement&&t.parentElement.querySelector(".ferr");if(s)s.textContent="";}});
 document.addEventListener("input",e=>{const el=e.target;if(el.dataset&&el.dataset.int!==undefined){el.value=el.value.replace(/\D/g,"");el.classList.remove("bad");const s=el.parentElement.querySelector(".ferr");if(s)s.textContent="";}});
 
@@ -503,7 +559,7 @@ function dlgSlip(){
     if(!/^image\//.test(file.type))return fieldErr(f,"file","ต้องเป็นไฟล์รูปภาพ");
     let img;try{img=await compressImage(file,1000,0.72);}catch(e){return fieldErr(f,"file","อ่านรูปไม่ได้");}
     const cur=mySlipDoc||{};const by={...(cur.bySid||{})};
-    Object.keys(by).forEach(k=>{if(k!==s.id&&by[k].img)by[k]={...by[k],img:""};});      // keep one image to stay within the document size limit
+    Object.keys(by).filter(k=>k!==s.id&&by[k].img).sort((a,b)=>(by[b].at||0)-(by[a].at||0)).slice(1).forEach(k=>{by[k]={...by[k],img:""};});      // keep this slip + the newest older one; the rest are dropped to stay within the document size limit
     by[s.id]={amount:amt,method:fv(f,"method"),img,at:now()};
     return write(`slips/${DB.uid}`,{bySid:by},"ส่งสลิปแล้ว — รอผู้จัดตรวจสอบ");
   });

@@ -52,8 +52,9 @@ function pRender(){
   $("#pOrgBar").hidden=!DB.realOrg;
   // session chip
   const sel=$("#pSess");
-  const list=S.sessions.filter(s=>s.status!=="closed"||s.id===S.sid).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-  const opts=list.map(s=>`<option value="${esc(s.id)}">${esc(fmtD(s.date))} · ${esc(s.title||"รอบเล่น")}</option>`).join("")||'<option value="">ยังไม่มีประกาศ</option>';
+  /* closed rounds stay reachable for 60 days if I played in them: that is where the bill is paid */
+  const list=S.sessions.filter(s=>s.status!=="closed"||s.id===S.sid||(mySignup(s.id)&&dateDiff(s.date)>-60)).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  const opts=list.map(s=>`<option value="${esc(s.id)}">${esc(fmtD(s.date))} · ${esc(s.title||"รอบเล่น")}${s.status==="closed"?" (ปิดแล้ว · ดูบิล)":""}</option>`).join("")||'<option value="">ยังไม่มีประกาศ</option>';
   if(sel.dataset.h!==opts){sel.innerHTML=opts;sel.dataset.h=opts;}
   if(S.sid)sel.value=S.sid;
   // nav
@@ -123,7 +124,7 @@ function pQueue(){
       ${cur?`<div class="me-stat"><span class="k">${cur.status==="playing"?"กำลังเล่นที่":"คอร์ดที่จะลง"}</span><span class="big">คอร์ด ${esc(cur.court)}</span></div>`:""}
       ${w>=0?`<div class="me-stat"><span class="k">ลำดับคิว</span><span class="big num">${w+1}</span></div>`:""}
       ${eta&&!(cur&&cur.status==="playing")?`<div class="me-stat"><span class="k">คาดว่าได้ลง</span><span class="big num">${eta<=t+30000?"ตอนนี้":hm(eta)}</span>${eta>t+30000?`<span class="small muted">อีก ~${Math.round((eta-t)/MIN)} นาที</span>`:""}</div>`:""}
-      <div class="me-stat"><span class="k">วันนี้</span><span class="big num">${x.games}</span><span class="small muted">เกม · ชนะ ${x.wins} แพ้ ${x.losses}</span></div></div>
+      <div class="me-stat"><span class="k">วันนี้</span><span class="big num">${x.games}</span><span class="small muted">เกม · ชนะ ${x.wins} แพ้ ${x.losses}${x.draws?` เสมอ ${x.draws}`:""}${x.helps?` · ช่วยแทน ${x.helps}`:""}</span></div></div>
       ${cur?matchMini(cur,ps,roster,t):""}
       ${st.k==="rest"?`<div class="small">พักขั้นต่ำ ${cfg().restMin} นาทีหลังจบเกม ระบบจะไม่จับคู่จนกว่าจะพักครบ</div>`:""}
       ${p.status==="reserve"?`<div class="small">คุณอยู่ในรายชื่อสำรอง${rosterModel().openSlots?` — มีที่ว่าง ${rosterModel().openSlots} ที่ มาถึงแล้วกดเช็คอินเพื่อได้สิทธิ์`:" รอที่ว่างหรือผู้จัดเลื่อนเป็นตัวจริง"}</div>`:""}
@@ -156,13 +157,16 @@ function pReq(){
 /* ---------- จ่ายเงิน ---------- */
 function pPay(){
   const s=curSession();if(!s)return pNoSession();
-  const c=cfg(),pm=payModel();const r=pm.rows.find(x=>x.id===myId());
-  return `<section class="panel"><div class="ph"><h2>ค่าใช้จ่ายรอบนี้</h2><span class="muted small">${esc(fmtD(s.date))}</span></div>
+  const c=priceCfg(curSession()),pm=payModel();const r=pm.rows.find(x=>x.id===myId());
+  /* earlier rounds I played in that are already closed: their bill can still be checked and paid */
+  const past=S.sessions.filter(x=>x.id!==s.id&&x.status==="closed"&&mySignup(x.id)&&dateDiff(x.date)>-45).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const pastBox=past.length?`<section class="panel" style="padding:12px 14px"><b>รอบก่อนหน้าที่ปิดแล้ว</b><span class="small muted"> — ตรวจบิลหรือชำระที่ค้างอยู่</span><div style="display:grid;gap:6px;margin-top:8px">${past.slice(0,4).map(x=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><span>${esc(fmtD(x.date))} · ${esc(x.title||"รอบเล่น")}</span><button class="sm" data-pact="useSessPay" data-id="${esc(x.id)}">ดูบิลรอบนี้</button></div>`).join("")}</div></section>`:"";
+  return pastBox+`<section class="panel"><div class="ph"><h2>ค่าใช้จ่าย${s.status==="closed"?" (ปิดรอบแล้ว)":"รอบนี้"}</h2><span class="muted small">${esc(fmtD(s.date))}</span></div>
     ${r?`<div class="me-row"><div class="me-stat"><span class="k">ยอดของฉัน</span><span class="big num" style="font-family:var(--font-display);font-size:2rem;font-weight:700">${baht(r.due)} ฿</span></div><div class="me-stat"><span class="k">สถานะ</span>${payChip(r)}</div></div>
       <div class="tw" style="margin-top:10px"><table><tbody>
         <tr><td>ค่าสนาม</td><td class="n">${baht(r.courtPart)} ฿</td></tr>
-        <tr><td>ค่าลูกใหม่ ${r.myShuttles} ลูก × ${baht(c.shuttleFee)} ฿${c.shuttleSplit==="shared"?" ÷ 4":""}<div class="small muted">นับจาก ${r.games} เกมที่คุณเล่น · ลูกซ่อมไม่คิดเงิน</div></td><td class="n">${baht(r.shuttlePart)} ฿</td></tr>
-        ${r.ov.dueOverride!=null?`<tr><td>ผู้จัดปรับยอด${r.adjReason?` (${esc(r.adjReason)})`:""}</td><td class="n">${baht(r.due)} ฿</td></tr>`:""}
+        <tr><td>ค่าลูกใหม่ ${r.myShuttles} ลูก × ${unit(c.shuttleFee)} ฿${c.shuttleSplit==="shared"?" ÷ 4":""}<div class="small muted">นับจาก ${r.games} เกมที่คุณเริ่มเล่น · ลูกซ่อมไม่คิดเงิน${r.leftEarly?` · ออกกลางเกม ${r.leftEarly} เกม (ยังคิดค่าลูกของเกมนั้น)`:""}${r.helped?` · ช่วยตีแทน ${r.helped} เกม (ไม่คิดค่าลูก)`:""}</div></td><td class="n">${baht(r.shuttlePart)} ฿</td></tr>
+        ${r.adjusted?`<tr><td>ผู้จัดปรับยอด${r.adjReason?` (${esc(r.adjReason)})`:""}</td><td class="n">${baht(r.due)} ฿</td></tr>`:""}
         <tr><td><b>รวม</b></td><td class="n"><b>${baht(r.due)} ฿</b></td></tr></tbody></table></div>
       ${r.state==="partial"?`<div class="notice warn">ยอดเพิ่มขึ้นหลังจากที่คุณจ่ายไปแล้ว ${baht(r.paidAmt)} ฿ — ค้างอีก <b>${baht(r.owe)} ฿</b></div>`:""}
       ${r.state==="rejected"&&r.rejectNote?`<div class="notice warn">ผู้จัดแจ้ง: ${esc(r.rejectNote)}</div>`:""}
@@ -170,7 +174,7 @@ function pPay(){
       ${r.state!=="paid"?'<p class="small muted">ยอดค่าลูกเพิ่มตามเกมที่เล่น — ชำระตอนเลิกเล่นจะได้ยอดที่ครบ</p>':""}`
       :'<div class="empty">ยังไม่มียอดของคุณ (คิดเมื่อเช็คอินหรือได้ลงเล่นแล้ว)</div>'}
     ${c.payInfo?`<div class="notice" style="margin-top:12px;white-space:pre-wrap">ช่องทางชำระ: ${esc(c.payInfo)}</div>`:""}
-    <p class="small muted">อัตรา: ค่าสนาม ${baht(c.playerCourtFee)} ฿/คน + ค่าลูกใหม่ ${baht(c.shuttleFee)} ฿/ลูก${c.shuttleSplit==="shared"?" หาร 4 คนในเกม":" ต่อคน"}</p></section>`;
+    <p class="small muted">อัตรา: ค่าสนาม ${baht(c.playerCourtFee)} ฿/คน + ค่าลูกใหม่ ${unit(c.shuttleFee)} ฿/ลูก${c.shuttleSplit==="shared"?" หาร 4 คนในเกม":" ต่อคน"}</p></section>`;
 }
 
 /* ---------- player actions ---------- */
@@ -191,7 +195,10 @@ document.addEventListener("click",async e=>{
     case "signupFor":return pSignup(id||S.sid);
     case "cancelFor":{const ps=S.sid===id?playerStats():null;if(ps&&ps.get(DB.uid).inMatch){toast("คุณอยู่ในแมตช์ ยกเลิกไม่ได้ — แจ้งผู้จัด");return;}
       if(ps&&ps.get(DB.uid).games>0){toast("คุณลงเล่นไปแล้ว ยกเลิกไม่ได้ — ถ้าจะกลับบ้านให้กด \"เช็คเอาท์\" ในคิวของฉัน");return;}
-      if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยันยกเลิก";return;}
+      if(!b.dataset.armed){b.dataset.armed="1";
+        const s0=S.sessions.find(x=>x.id===id),dl=s0&&checkinDeadline(s0),fee=+cfg().noShowFee||0;
+        if(dl&&now()>dl&&!((mySignup(id)||{}).checkedInAt)){b.textContent="ยืนยัน (นับเป็นไม่มา)";toast(`เลยเวลาเช็คอิน (${hm(dl)} น.) แล้ว — ถ้ายกเลิกตอนนี้จะนับเป็นไม่มาตามนัด${fee?` และมีค่าปรับ ${baht(fee)} ฿`:""}`);}
+        else b.textContent="ยืนยันยกเลิก";return;}
       const me=selfDoc(DB.uid);const su={...(me.signups||{})};su[id]={...(su[id]||{}),cancelled:true,cancelledAt:now()};await write(`self/${DB.uid}`,{...stripId(me),signups:su},"ยกเลิกการลงชื่อแล้ว");return;}
     case "selfCheckin":{const sid=id||S.sid;const me=selfDoc(DB.uid);if(!me||!mySignup(sid)){toast("ลงชื่อรอบนี้ก่อน");return;}
       const su={...(me.signups||{})};su[sid]={...su[sid],checkedInAt:now()};delete su[sid].checkedOutAt;if(await write(`self/${DB.uid}`,{...stripId(me),signups:su},"เช็คอินแล้ว — เข้าคิวเรียบร้อย")){if(S.sid!==sid)selectSession(sid);ptab="queue";render();}return;}
@@ -201,6 +208,7 @@ document.addEventListener("click",async e=>{
       const su={...(me.signups||{})};su[sid]={...su[sid],checkedOutAt:now()};await write(`self/${DB.uid}`,{...stripId(me),signups:su},"เช็คเอาท์แล้ว — ระบบจะไม่จัดคุณลงคิวอีก");return;}
     case "toggleList":if(openList.has(id))openList.delete(id);else openList.add(id);return render();
     case "useSess":selectSession(id);ptab="queue";return render();
+    case "useSessPay":selectSession(id);ptab="pay";try{localStorage.setItem("bgo-ptab",ptab);}catch(_){}window.scrollTo(0,0);return render();
     case "newRequest":return dlgRequest();
     case "reqCancel":{const me=selfDoc(DB.uid);const rq={...(me.requests||{})};if(rq[id])rq[id]={...rq[id],cancelled:true};await write(`self/${DB.uid}`,{...stripId(me),requests:rq},"ยกเลิกคำขอแล้ว");return;}
     case "paySlip":return dlgSlip();

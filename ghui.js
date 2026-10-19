@@ -11,7 +11,7 @@ const DEV_API=(/^(localhost|127\.0\.0\.1)$/.test(location.hostname)&&QS.get("api
 function showGate(inner,opts={}){
   hideShells(true);
   if(!gate){gate=document.createElement("div");gate.id="ghGate";gate.className="gate";document.body.appendChild(gate);}
-  gate.innerHTML=`<div class="gate-in"><div class="gate-brand"><svg width="44" height="44" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="9" fill="var(--accent)"/><path d="M17 23 L10 9 M17 23 L14 8 M17 23 L20 8 M17 23 L24 9" stroke="var(--accent-ink)" stroke-width="1.6" stroke-linecap="round"/><path d="M10 9 Q17 5 24 9" stroke="var(--accent-ink)" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="17" cy="26" r="3" fill="var(--accent-ink)"/></svg>
+  gate.innerHTML=`<div class="gate-in"><div class="gate-hero" aria-hidden="true"><svg class="lg" width="64" height="64" viewBox="0 0 40 40" aria-hidden="true"><rect class="lg-bg" width="40" height="40" rx="11"/><g transform="translate(-1.5 1.5) rotate(42 20 20)"><path class="lg-sk" d="M16 21.5 10.5 7Q20 3 29.5 7L24 21.5Z"/><path class="lg-rib" d="M17.4 21 14.2 5.8M20 21V4.6M22.6 21 25.8 5.8" stroke-width="1.1" stroke-linecap="round"/><circle class="lg-hd" cx="20" cy="26.2" r="5.6"/></g></svg></div><div class="gate-brand">
     <div><h1>ก๊วนแบด</h1><p>${h(opts.sub||"เชื่อมต่อข้อมูลก๊วนผ่าน GitHub")}</p></div></div>${inner}</div>`;
   gate.hidden=false;return gate;
 }
