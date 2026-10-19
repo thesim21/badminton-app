@@ -23,14 +23,14 @@ function loadCfg(){try{const c=JSON.parse(localStorage.getItem(LS_CFG)||"null");
 function saveCfg(c){memCfg=c;try{localStorage.setItem(LS_CFG,JSON.stringify(c));}catch(e){}}
 function clearCfg(){memCfg=null;try{localStorage.removeItem(LS_CFG);}catch(e){}}
 const newUid=()=>"u"+hex(crypto.getRandomValues(new Uint8Array(6)));
-function makeInvite(c,fp){return INV+b64u(enc.encode(JSON.stringify({r:c.repo,b:c.branch||"main",t:c.token,f:fp||c.fp||"",a:c.api||undefined})));}
+function makeInvite(c,fp){return INV+b64u(enc.encode(JSON.stringify({r:c.repo,b:c.branch||"main",t:c.token,f:fp||c.fp||"",a:c.api||undefined,x:c.tokenExp||undefined})));}
 function parseInvite(s){
   s=String(s||"");const j=s.indexOf(INV);if(j<0)throw new Error("รหัสเชิญไม่ถูกต้อง — ต้องขึ้นต้นด้วย BGO1.");
   s=s.slice(j+INV.length).match(/^[A-Za-z0-9_-]+/);s=s?s[0]:"";
   let o;try{o=JSON.parse(dec.decode(unb64u(s)));}catch(e){throw new Error("รหัสเชิญถูกตัดขาดหรือไม่ครบ — คัดลอกมาใหม่ทั้งหมด");}
   if(!o||!/^[\w.-]+\/[\w.-]+$/.test(o.r||"")||!o.t)throw new Error("รหัสเชิญไม่ครบ (ไม่มี repo หรือโทเคน)");
   const local=/^(localhost|127\.0\.0\.1)$/.test(location.hostname);   // a custom API address is only honoured when testing on localhost (never from a link on the internet)
-  return {repo:o.r,branch:o.b||"main",token:o.t,fp:o.f||"",api:local&&o.a||""};
+  return {repo:o.r,branch:o.b||"main",token:o.t,fp:o.f||"",api:local&&o.a||"",tokenExp:/^\d{4}-\d{2}-\d{2}$/.test(o.x||"")?o.x:""};
 }
 
 /* ================= state ================= */
@@ -417,9 +417,9 @@ async function fetchMeta(cfg){
   try{const r=await req("GET",`/repos/${cfg.repo}/contents/data/_meta/config.json?ref=${encodeURIComponent(cfg.branch)}`,{accept:"application/vnd.github.raw+json",raw:true},cfg);return JSON.parse(r.text);}
   catch(e){if(e.kind==="notfound"||e.kind==="conflict")return null;throw e;}
 }
-async function setupOrg({repo,branch,token,api,pass,group}){
+async function setupOrg({repo,branch,token,api,pass,group,tokenExp}){
   need();
-  const cfg={repo:repo.trim(),branch:(branch||"main").trim(),token:token.trim(),api:api||""};
+  const cfg={repo:repo.trim(),branch:(branch||"main").trim(),token:token.trim(),api:api||"",tokenExp:tokenExp||""};
   if(!/^[\w.-]+\/[\w.-]+$/.test(cfg.repo))throw new Error("ชื่อ repo ต้องอยู่ในรูป เจ้าของ/ชื่อ เช่น somchai/badminton-data");
   if(!cfg.token)throw new Error("ยังไม่ได้ใส่โทเคน");
   if(String(pass||"").length<8)throw new Error("รหัสผ่านผู้จัดต้องยาวอย่างน้อย 8 ตัวอักษร");
@@ -503,7 +503,7 @@ async function wipeLocal(cfg){
 }
 
 /* token replaced (after rotation) */
-function updateToken(token,fp){const c=st.cfg;if(!c)return;c.token=token;if(fp)c.fp=fp;saveCfg(c);st.errN=0;net("init");wake();pump();}
+function updateToken(token,fp,exp){const c=st.cfg;if(!c)return;c.token=token;if(fp)c.fp=fp;if(exp!==undefined)c.tokenExp=exp||"";saveCfg(c);st.errN=0;net("init");wake();pump();}
 
 return {loadCfg,saveCfg,clearCfg,newUid,makeInvite,parseInvite,explain,
   init,stop,status,onStatus:f=>{statusSubs.add(f);return ()=>statusSubs.delete(f);},wake,

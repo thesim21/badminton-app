@@ -35,7 +35,7 @@ function doRender(){
   const tabsEl=$("#tabs");if(tabsEl.dataset.h!==tabsHtml){tabsEl.innerHTML=tabsHtml;tabsEl.dataset.h=tabsHtml;}
   const v=$("#view");
   const fn={members:vMembers,courts:vCourts,players:vPlayers,requests:vRequests,money:vMoney,board:vBoard,stock:vStock,stats:vStats,settings:vSettings}[tab]||vCourts;
-  paint(v,roundBanner()+fn(),tab);
+  paint(v,(DB.mode==="gh"?GHUI.tokenBar():"")+roundBanner()+fn(),tab);
   tick();
 }
 /* bar above every tab: the booked time is almost over / over → one tap to close the round */
@@ -179,10 +179,28 @@ function dlgAddFromMembers(){
 }
 
 /* ---------- courts & queue ---------- */
+/* live shuttle counters on a running court: a new shuttle is billed to the four players of this court, a repaired one is free */
+function shuttleBox(m){
+  const c=priceCfg(curSession()),x=matchShuttles(m),per=(c.shuttleSplit==="shared"?(+c.shuttleFee||0)/4:(+c.shuttleFee||0))*x.sh;
+  const stp=(k,label,n,sub)=>`<div class="shg"><span class="k">${label}</span><div class="stp"><button type="button" class="sm" data-act="shAdj" data-id="${esc(m.id)}" data-k="${k}" data-d="-1" aria-label="ลด${label}"${n<=0?" disabled":""}>−</button><b class="num">${n}</b><button type="button" class="sm primary" data-act="shAdj" data-id="${esc(m.id)}" data-k="${k}" data-d="1" aria-label="เพิ่ม${label}"${m.free&&k==="new"?" disabled":""}>+</button></div><span class="small muted">${sub}</span></div>`;
+  return `<div class="shuts">${stp("new","ลูกใหม่",x.sh,m.free?"เกมฟรี ไม่คิดเงิน":x.sh?`คิดเงิน 4 คน คนละ ${baht(per)} ฿`:"ไม่คิดเงิน")}${stp("repair","ลูกซ่อม",x.rp,"ฟรี ไม่คิดเงิน")}</div>`;
+}
+function dlgFree(m){
+  const N=setsOf(curSession());
+  openDlg(`<form novalidate><h2>เกมฟรี (ลูกซ่อม) · คอร์ด ${esc(m.court)}</h2>
+    <p class="small" style="margin:0 0 8px">ใช้เมื่อเวลาเหลือน้อย ผู้จัดใจดีให้ผู้เล่นได้เล่นต่อ — เกมนี้ใช้<b>ลูกซ่อม</b> ไม่คิดค่าลูกใหม่ของ 4 คนนี้ · ถ้าใครมาเล่นเฉพาะเกมฟรี ไม่ต้องจ่ายค่าสนาม</p>
+    <div class="fg"><label class="f">จำนวนเซตของเกมนี้<select name="n"><option value="">ตามปกติ (${N} เซต)</option>${[1,2,3].map(i=>`<option value="${i}">${i} เซต</option>`).join("")}</select></label></div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">ตั้งเป็นเกมฟรี</button></div></form>`,async f=>{
+    const live=S.matches.find(x=>x.id===m.id);if(!live||(live.status!=="queued"&&live.status!=="playing")){toast("เกมนี้จบหรือถูกยกเลิกไปแล้ว");return true;}
+    const n=+fv(f,"n")||0,s=curSession();
+    const data={...stripId(live),free:true,shuttles:0,repair:Math.max(1,+live.repair||0)};if(n)data.setsN=n;else delete data.setsN;
+    const ok=await write(`sessions/${s.id}/matches/${m.id}`,data,"ตั้งเป็นเกมฟรี (ลูกซ่อม) แล้ว");
+    if(ok)logEv("เกมฟรี (ลูกซ่อม)",`คอร์ด ${m.court}: ${[...m.a,...m.b].map(nameOf).join(", ")}${n?` · ${n} เซต`:""}`);return ok;});
+}
 function vCourts(){
   const s=curSession();if(!s)return noSession();
   const c=cfg(),roster=rosterModel(),ps=playerStats(),tl=timeline(roster,ps),t=now();
-  const present=roster.filter(p=>p.status==="confirmed"&&p.checkedIn);
+  const present=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.notYet);
   const playing=S.matches.filter(m=>m.status==="playing");
   const queued=S.matches.filter(m=>m.status==="queued").sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
   const ready=tl.waiting.filter(p=>!(ps.get(p.id).restUntil>t));
@@ -203,18 +221,19 @@ function vCourts(){
         <div class="court-b">${nextQ.length?(()=>{const q=nextQ[0];const ru=Math.max(0,...[...q.a,...q.b].map(id=>ps.get(id).restUntil||0));
           return `<div style="text-align:center;display:grid;gap:4px"><div class="small">คู่ถัดไปรออยู่</div>${matchMini(q,ps,roster,t)}${ru>t?`<div class="small">ผู้เล่นพักครบเวลา ${hm(ru)} <span class="chip s-rest" data-until="${ru}">พัก ${mmss(ru-t)}</span></div>`:`<div class="small" style="color:var(--ready)">ทุกคนพักครบแล้ว เริ่มได้เลย</div>`}</div>`;})():"<span>ยังไม่มีคู่ลงคอร์ดนี้</span>"}</div>
         <div class="court-f">${DB.isOrg&&nextQ.length?(()=>{const q=nextQ[0];const rb=[...q.a,...q.b].some(id=>(ps.get(id).restUntil||0)>t);return `<button class="${rb?"":"primary "}sm" data-act="startMatch" data-id="${q.id}">${rb?"เริ่ม (ยังพักไม่ครบ)":"เริ่มเกม"}</button>`;})():""}</div></article>`;
-      return `<article class="court"><div class="court-h"><b>คอร์ด ${esc(cn)}</b><span class="sp"></span><span class="chip s-play">กำลังเล่น</span><span class="timer" data-since="${m.startAt}">${mmss(t-m.startAt)}</span></div>
+      return `<article class="court"><div class="court-h"><b>คอร์ด ${esc(cn)}</b><span class="sp"></span>${m.free?'<span class="chip s-ready">เกมฟรี</span>':""}<span class="chip s-play">กำลังเล่น</span><span class="timer" data-since="${m.startAt}">${mmss(t-m.startAt)}</span></div>
         <div class="court-b"><div class="vs"><div class="team a">${m.a.map(id=>pChip(id,ps,roster,t)).join("")}</div><span class="x">VS</span><div class="team b">${m.b.map(id=>pChip(id,ps,roster,t)).join("")}</div></div>
+        ${DB.isOrg?shuttleBox(m):""}
         ${nextQ.length?`<div class="small muted">ถัดไป: ${nextQ.map(q=>[...q.a,...q.b].map(nameOf).map(esc).join(", ")).join(" · ")}</div>`:""}</div>
-        <div class="court-f">${DB.isOrg?`<button class="primary sm" data-act="endMatch" data-id="${m.id}">จบเกม / บันทึกผล</button><button class="sm" data-act="swap" data-id="${m.id}">เปลี่ยนตัว</button><button class="ghost sm" data-act="cancelMatch" data-id="${m.id}">ยกเลิก</button>`:""}</div></article>`;
+        <div class="court-f">${DB.isOrg?`<button class="primary sm" data-act="endMatch" data-id="${m.id}">จบเกม / บันทึกผล</button><button class="sm" data-act="swap" data-id="${m.id}">เปลี่ยนตัว</button><button class="ghost sm" data-act="freeGame" data-id="${m.id}">${m.free?"เลิกเกมฟรี":"เกมฟรี"}</button><button class="ghost sm" data-act="cancelMatch" data-id="${m.id}">ยกเลิก</button>`:""}</div></article>`;
     }).join("")}${DB.isOrg&&s.status!=="closed"?`<button type="button" class="court-add" data-act="addCourt"><span class="plus">+</span>เพิ่มคอร์ด<small>ใช้ได้ทันที · ค่าเช่าคิดตั้งแต่เวลาที่เพิ่ม</small></button>`:""}</div></section>`;
   h+=`<div class="grid2"><section class="panel"><div class="ph"><h2>คู่ที่รอลงคอร์ด</h2><span class="muted small">${queued.length} คู่</span></div>
     ${queued.length?`<div class="qlist">${queued.map((m,i)=>{const eta=tl.matchEta[m.id];const restBlock=[...m.a,...m.b].some(id=>(ps.get(id).restUntil||0)>t);
-      return `<div class="qcard"><span class="ord">${i+1}</span><div style="min-width:0">${matchMini(m,ps,roster,t)}<div class="small muted">คอร์ด ${esc(m.court)} · คาดว่าเริ่ม ${eta?hm(eta):"–"}${m.via==="manual"?" · จัดเอง":""}${m.reqIds&&m.reqIds.length?" · ตามคำขอ":""}</div></div>
-      <div class="acts" style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${DB.isOrg?`<button class="${restBlock?"":"primary "}sm" data-act="startMatch" data-id="${m.id}" ${playing.some(x=>x.court===m.court)?"disabled title=\"คอร์ดยังไม่ว่าง\"":""}>${restBlock?"เริ่ม (ยังพักไม่ครบ)":"เริ่มเกม"}</button><button class="sm" data-act="swap" data-id="${m.id}">เปลี่ยนตัว</button><button class="ghost sm" data-act="cancelMatch" data-id="${m.id}">ยกเลิก</button>`:""}</div></div>`;}).join("")}</div>`:`<div class="empty">ยังไม่มีคู่ในคิว${DB.isOrg?" — กด \"จัดคู่อัตโนมัติ\"":""}</div>`}
+      return `<div class="qcard"><span class="ord">${i+1}</span><div style="min-width:0">${matchMini(m,ps,roster,t)}<div class="small muted">คอร์ด ${esc(m.court)} · คาดว่าเริ่ม ${eta?hm(eta):"–"}${m.via==="manual"?" · จัดเอง":""}${m.reqIds&&m.reqIds.length?" · ตามคำขอ":""}</div>${(()=>{const end=sessEndEpoch(s),st=eta||t;return DB.isOrg&&!m.free&&end&&end-st<c.avgMin*MIN&&end-st>-30*MIN?`<div class="small" style="color:var(--warn)">เวลาเหลือไม่พอเล่นครบ ${setsOf(s)} เซต — ให้เล่นแบบ "เกมฟรี" (ลูกซ่อม) ได้</div>`:"";})()}</div>
+      <div class="acts" style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${DB.isOrg?`<button class="${restBlock?"":"primary "}sm" data-act="startMatch" data-id="${m.id}" ${playing.some(x=>x.court===m.court)?"disabled title=\"คอร์ดยังไม่ว่าง\"":""}>${restBlock?"เริ่ม (ยังพักไม่ครบ)":"เริ่มเกม"}</button><button class="sm" data-act="swap" data-id="${m.id}">เปลี่ยนตัว</button><button class="ghost sm" data-act="freeGame" data-id="${m.id}">${m.free?"เลิกเกมฟรี":"เกมฟรี"}</button><button class="ghost sm" data-act="cancelMatch" data-id="${m.id}">ยกเลิก</button>`:""}</div></div>`;}).join("")}</div>`:`<div class="empty">ยังไม่มีคู่ในคิว${DB.isOrg?" — กด \"จัดคู่อัตโนมัติ\"":""}</div>`}
   </section>
   <section class="panel"><div class="ph"><h2>ผู้เล่นที่รอ</h2><span class="muted small">เรียงตามเกมน้อย → รอนาน</span></div>
-    ${tl.waiting.length?`<div class="tw"><table><thead><tr><th>#</th><th>ผู้เล่น</th><th>สถานะ</th><th class="n">เกม</th><th class="n">คาดว่าได้ลง</th></tr></thead><tbody>${tl.waiting.map((p,i)=>{const st=statusOf(p,ps,t);const x=ps.get(p.id);
+    ${tl.waiting.length?`<div class="tw"><table class="wtbl"><thead><tr><th>#</th><th>ผู้เล่น</th><th>สถานะ</th><th class="n">เกม</th><th class="n">คาดว่าได้ลง</th></tr></thead><tbody>${tl.waiting.map((p,i)=>{const st=statusOf(p,ps,t);const x=ps.get(p.id);
       return `<tr><td class="num">${i+1}</td><td><div class="pn">${skillChip(p.skill)}<span class="nm">${esc(p.name)}</span></div></td><td><span class="chip s-${st.k}" ${st.until?`data-until="${st.until}"`:""}>${esc(st.t)}</span></td><td class="n">${x.games}</td><td class="n">${tl.eta[p.id]?(tl.eta[p.id]<=t+30000?"ตอนนี้":hm(tl.eta[p.id])+" ("+Math.round((tl.eta[p.id]-t)/MIN)+" นาที)"):"–"}</td></tr>`;}).join("")}</tbody></table></div>`:`<div class="empty">${present.length?"ทุกคนอยู่ในคอร์ดหรือคิวแล้ว":"ยังไม่มีผู้เล่นเช็คอิน — เช็คอินที่แท็บ \"ประกาศ & ผู้เล่น\""}</div>`}
   </section></div>`;
   return h;
@@ -234,14 +253,19 @@ function vPlayers(){
   if(dl&&s.status!=="closed")h+=t<dl
     ?`<div class="notice">เช็คอินภายใน <b>${hm(dl)}</b> (อีก <span data-until="${dl}">${mmss(dl-t)}</span>) — หลังจากนั้นตัวจริงที่ยังไม่มาจะเสียสิทธิ์ให้ตัวสำรองที่มาถึงแล้ว · ยังไม่เช็คอิน ${groups.confirmed.filter(p=>!p.checkedIn).length} คน</div>`
     :(groups.noshow.length?`<div class="notice warn">เลยเวลาเช็คอิน ${hm(dl)} แล้ว — ไม่มาตามนัด ${groups.noshow.length} คน${roster.filter(p=>p.promoted).length?` · เลื่อนตัวสำรองที่มาแล้วขึ้นแทน ${roster.filter(p=>p.promoted).length} คน`:""}${roster.openSlots?` · ยังว่าง ${roster.openSlots} ที่`:""}${cfg().noShowFee?` · คิดค่าปรับคนละ ${baht(cfg().noShowFee)} ฿`:""}</div>`:"");
+  const R=roster.rounds,dl2=roster.deadline2;
+  if(R&&s.status!=="closed"){const n1=groups.confirmed.filter(p=>p.round===1).length,n2=groups.confirmed.filter(p=>p.round===2).length;
+    h+=`<div class="notice">รอบ ${esc(s.start||"")}: ${n1}/${s.maxPlayers||"-"} คน · รอบ ${esc(R.start)}: ${n2}/${R.max<999?R.max:"-"} คน · สำรองรอรอบ ${esc(s.start||"")} ${roster.rsvTotal[1]} · สำรองรอรอบ ${esc(R.start)} ${roster.rsvTotal[2]}${dl2&&t<dl2?` · เช็คอินรอบ ${esc(R.start)} ได้ถึง <b>${hm(dl2)}</b>`:""}${roster.some(p=>p.notYet&&p.checkedIn)?` · เช็คอินรอรอบ ${esc(R.start)} แล้ว ${roster.filter(p=>p.notYet&&p.checkedIn).length} คน (ยังไม่ถูกจัดลงคอร์ด)`:""}</div>`;}
   const list=groups[rosterTab]||[];
   h+=`<section class="panel"><div class="ph"><h2>รายชื่อผู้เล่น</h2>
     <div class="seg" role="group">${[["confirmed","ตัวจริง"],["reserve","สำรอง"],...(groups.noshow.length?[["noshow","ไม่มา"]]:[]),["removed","นำออก"]].map(([k,tx])=>`<button data-act="rosterTab" data-k="${k}" aria-pressed="${rosterTab===k}">${tx} ${groups[k].length}</button>`).join("")}</div>
-    <span class="sp"></span>${DB.isOrg?`<button class="primary" data-act="addFromMembers">+ เพิ่มจากสมาชิกก๊วน</button><button data-act="addWalkin">+ เพิ่มผู้เล่นใหม่</button><button class="ghost" data-act="checkinAll">เช็คอินทั้งหมด</button>`:""}</div>
+    <span class="sp"></span>${DB.isOrg?`<button class="primary" data-act="addFromMembers">+ เพิ่มจากสมาชิกก๊วน</button><button data-act="addWalkin">+ เพิ่มผู้เล่นใหม่</button><button class="ghost" data-act="checkinAll">เช็คอินทั้งหมด</button><button class="ghost" data-act="qrOpen">QR ก๊วน</button>`:""}</div>
     ${list.length?`<div class="tw"><table class="rostbl"><thead><tr><th>#</th><th>ชื่อ</th><th>ระดับ</th><th>สถานะ</th><th class="n">เกม</th><th>ประเภท</th>${DB.isOrg?"<th></th>":""}</tr></thead><tbody>${list.map((p,i)=>{const st=statusOf(p,ps,t);
-      return `<tr><td class="num c-num">${i+1}</td><td class="c-name"><b>${esc(p.name)}</b></td><td class="c-lv">${skillChip(p.skill)} <span class="small muted">${esc(SKILL[sk(p.skill)].t)}</span></td><td class="c-st"><span class="chip s-${st.k}" ${st.until?`data-until="${st.until}"`:""}>${esc(st.t)}</span></td><td class="n c-games" data-l="เกม">${ps.get(p.id).games}</td><td class="small muted c-type">${p.member?"สมาชิกก๊วน":p.walkin?"walk-in":"ลงชื่อเอง"}</td>
+      const rchip=R&&(p.status==="confirmed"||p.status==="reserve")?` <span class="chip ${(p.round||p.want)===2?"s-warn":"s-queued"}">${p.status==="reserve"?"สำรอง ":""}รอบ ${esc((p.round||p.want)===2?R.start:s.start||"")}${p.upgraded?" ↑":""}</span>`:"";
+      return `<tr><td class="num c-num">${p.status==="confirmed"?p.no||i+1:p.status==="reserve"?p.rsvNo||i+1:i+1}</td><td class="c-name"><b>${esc(p.name)}</b>${rchip}</td><td class="c-lv">${skillChip(p.skill)} <span class="small muted">${esc(SKILL[sk(p.skill)].t)}</span></td><td class="c-st"><span class="chip s-${st.k}" ${st.until?`data-until="${st.until}"`:""}>${esc(st.t)}</span></td><td class="n c-games" data-l="เกม">${ps.get(p.id).games}</td><td class="small muted c-type">${p.member?"สมาชิกก๊วน":p.walkin?"walk-in":"ลงชื่อเอง"}</td>
       ${DB.isOrg?`<td class="c-act"><div class="acts">${p.status==="confirmed"?(p.checkedIn?`<button class="sm" data-act="checkout" data-id="${esc(p.id)}">เช็คเอาท์</button>`:`<button class="primary sm" data-act="checkin" data-id="${esc(p.id)}">เช็คอิน</button>`):""}
         ${p.status==="reserve"?`<button class="sm" data-act="promote" data-id="${esc(p.id)}">เลื่อนเป็นตัวจริง</button>`:""}
+        ${R&&(p.status==="confirmed"||p.status==="reserve")?`<button class="ghost sm" data-act="moveRound" data-id="${esc(p.id)}">ย้ายไปรอบ ${esc((p.round||p.want)===2?s.start||"":R.start)}</button>`:""}
         ${p.status==="noshow"?`<button class="primary sm" data-act="checkin" data-id="${esc(p.id)}">มาแล้ว · เช็คอิน</button>`:""}
         ${p.status==="removed"?`<button class="sm" data-act="restore" data-id="${esc(p.id)}">คืนรายชื่อ</button>`:`<button class="ghost sm" data-act="editPlayer" data-id="${esc(p.id)}">แก้ไข</button><button class="ghost sm" data-act="removeP" data-id="${esc(p.id)}">นำออก</button>`}</div></td>`:""}</tr>`;}).join("")}</tbody></table></div>`:`<div class="empty">ไม่มีผู้เล่นในกลุ่มนี้</div>`}
   </section>`;
@@ -260,7 +284,125 @@ function vRequests(){
   return h;
 }
 
+/* ---------- QR for the group ---------- */
+/* picture of the pay QR: with a PromptPay number the amount can be inside the QR; otherwise the picture the organizer saved */
+async function payQrBlob(amount,who){
+  const pay=S.payqr||{},c=cfg();
+  const lines=[who||"",pay.ppName?`บัญชี ${pay.ppName}`:"",amount>0?`ยอดที่ต้องจ่าย ${baht(amount)} บาท`:"",c.payInfo&&!pay.pp&&!amount?c.payInfo.split("\n")[0]:""].filter(Boolean);
+  if(pay.pp&&(amount>0||!pay.img))return QRS.cardBlob({text:QRS.ppPayload(pay.pp,amount),title:"สแกนจ่ายค่าเล่น",lines:lines.length?lines:[c.group||"ก๊วนแบด"]});
+  if(pay.img)return QRS.cardBlob({img:pay.img,title:"สแกนจ่ายค่าเล่น",lines:lines.length?lines:[c.group||"ก๊วนแบด"]});
+  throw new Error("ยังไม่ได้บันทึก QR จ่ายเงิน");
+}
+async function sendPayQr(amount,who,btn){
+  const o=btn&&btn.textContent;
+  try{const r=await QRS.share(await payQrBlob(amount,who),"qr-pay.png",`${amount>0?`${who||""} ยอด ${baht(amount)} บาท — `:""}สแกนจ่ายค่าเล่น`);if(btn&&r==="saved")toast("บันทึกรูปแล้ว — แนบส่งใน LINE ได้เลย");}
+  catch(e){toast(e.message||"สร้างรูป QR ไม่ได้");}
+  if(btn)btn.textContent=o;
+}
+function dlgQr(){
+  const pay=S.payqr||{},has=!!(pay.img||pay.pp),isGh=DB.mode==="gh";
+  openDlg(`<div style="display:grid;gap:14px"><h2>QR ของก๊วน</h2>
+    <section class="qrsec"><h3>QR เข้าร่วมก๊วน</h3>
+      <p class="small" style="margin:0">QR ลิงก์เชิญผู้เล่น — บันทึกเป็นรูปหรือส่งเข้ากลุ่ม LINE ของผู้จัดได้</p>
+      ${isGh?`<div class="dlg-a" style="justify-content:flex-start"><button class="primary" data-act="openInvite">เปิด QR เข้าร่วม (บันทึก / ส่งเข้า LINE)</button></div>`:`<div class="notice small">โหมดเครื่องเดียวยังไม่มีลิงก์เชิญ — เชื่อมกับ GitHub ก่อนแล้ว QR เข้าร่วมจะขึ้นที่นี่</div>`}
+    </section>
+    <section class="qrsec"><h3>QR จ่ายค่าเล่น</h3>
+      ${has?(pay.img?`<img class="qrprev" src="${esc(pay.img)}" alt="QR จ่ายเงินที่บันทึกไว้">`:`<img class="qrprev" id="qrGen" alt="QR พร้อมเพย์">`):`<div class="notice small">ยังไม่ได้บันทึก — เลือกรูป QR จากแอปธนาคาร (ภาพหน้าจอ) หรือใส่เลขพร้อมเพย์ให้แอปสร้างให้</div>`}
+      <div class="dlg-a" style="justify-content:flex-start"><label class="btn-file"><input type="file" id="qrFile" accept="image/*" hidden><span class="sm-btn">${pay.img?"เปลี่ยนรูป QR":"เลือกรูป QR จากเครื่อง"}</span></label>
+        ${has?`<button class="sm" data-act="qrSave">บันทึกรูป</button><button class="sm primary" data-act="qrSend">ส่งเข้า LINE</button>`:""}${pay.img?`<button class="ghost sm" data-act="qrDel" data-k="img">ลบรูป</button>`:""}</div>
+      <form id="ppForm" novalidate style="display:grid;gap:8px"><div class="fg">
+        <label class="f">เลขพร้อมเพย์ (ไม่บังคับ)<input name="pp" inputmode="numeric" maxlength="20" value="${esc(pay.pp||"")}" placeholder="เบอร์มือถือ / เลขบัตรประชาชน" autocomplete="off"><span class="ferr"></span></label>
+        <label class="f">ชื่อบัญชี (แสดงบนรูป)<input name="ppName" maxlength="60" value="${esc(pay.ppName||"")}" autocomplete="off"></label></div>
+        <p class="small muted" style="margin:0">ใส่เลขพร้อมเพย์แล้ว ปุ่ม “QR ยอด” ในหน้าค่าใช้จ่ายจะสร้าง QR ที่ใส่ยอดของแต่ละคนให้ · <b>ลองสแกนด้วยแอปธนาคารของคุณก่อนใช้จริงทุกครั้ง</b></p>
+        <div class="dlg-a" style="justify-content:flex-start"><button type="submit" class="sm">บันทึกพร้อมเพย์</button>${pay.pp?`<button type="button" class="ghost sm" data-act="qrDel" data-k="pp">ลบพร้อมเพย์</button>`:""}<button type="button" class="ghost" data-close>ปิด</button></div></form>
+    </section></div>`,async()=>false);   // the PromptPay form below handles its own submit
+  const pf=document.getElementById("ppForm");
+  pf.addEventListener("submit",async e=>{e.preventDefault();const pp=pf.elements.pp.value.trim();
+    if(pp&&!QRS.ppValid(pp)){fieldErr(pf,"pp","เบอร์มือถือ 10 หลัก, เลขบัตร/ภาษี 13 หลัก หรือ e-Wallet 15 หลัก");return;}
+    const d={...(S.payqr||{})};delete d.id;if(pp)d.pp=QRS.ppValid(pp);else delete d.pp;const nm=pf.elements.ppName.value.trim();if(nm)d.ppName=nm;else delete d.ppName;
+    if(await write("cfg/pay",d,"บันทึกข้อมูล QR จ่ายเงินแล้ว"))setTimeout(dlgQr,150);});
+  document.getElementById("qrFile").addEventListener("change",async e=>{const f=e.target.files&&e.target.files[0];if(!f)return;
+    try{const img=await QRS.shrink(f);const d={...(S.payqr||{})};delete d.id;d.img=img;d.upAt=now();
+      if(await write("cfg/pay",d,"บันทึก QR จ่ายเงินแล้ว — ผู้เล่นเห็นในแท็บจ่ายเงิน"))setTimeout(dlgQr,150);}
+    catch(x){toast(x.message||"อ่านรูปไม่ได้");}});
+  const g=document.getElementById("qrGen");if(g)QRS.cardBlob({text:QRS.ppPayload(pay.pp,0),title:"สแกนจ่ายค่าเล่น",lines:[pay.ppName||cfg().group||""]}).then(b=>{g.src=URL.createObjectURL(b);}).catch(()=>{});
+}
 /* ---------- money ---------- */
+const METHOD_TH={cash:"เงินสด",transfer:"โอน"};
+const fmtDT=ts=>{const d=new Date(ts);return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;};
+/* what was received so far, each receipt with how it came in */
+function recLine(r){
+  if(!r.recs.length&&!(r.paidAmt>0))return "";
+  const parts=r.recs.length?r.recs.map(x=>`${METHOD_TH[x.m]||"เงินสด"} ${baht(x.a)} ฿ (${fmtDT(x.at)})`):[`${r.transAmt>0?"โอน":"เงินสด"} ${baht(r.paidAmt)} ฿`];
+  return `<div class="small recl">รับแล้ว: ${parts.map(esc).join(" + ")}${r.owe>0?` · <b style="color:var(--warn)">ค้าง ${baht(r.owe)} ฿</b>`:""}</div>`;
+}
+/* the new pay document after a receipt (cash or transfer); r is a row of payModel() */
+function receiptDoc(r,amount,method,extra){
+  const x={...(r.ov||{})},add=Math.max(0,Math.min(amount,r.owe)),by=DB.meName||"ผู้จัด";
+  x.status=method==="transfer"?"verified":"cash";x.by=by;x.at=now();x.paidAmount=Math.min(r.due,r.paidAmt+add);
+  x.rec=[...(Array.isArray(x.rec)?x.rec:[]),{a:add,m:method==="transfer"?"transfer":"cash",at:now(),by,...(extra||{})}];
+  delete x.note;delete x.adjReason;return x;
+}
+/* ---- who still owes from rounds that are already closed (kept per player in notes/{id}, which only the player and organizers can read) ---- */
+function debtLedger(){
+  const out=[];
+  (S.notes||[]).forEach(n=>{Object.entries(n.bySid||{}).forEach(([sid,v])=>{
+    const ss=S.sessions.find(x=>x.id===sid);if(!ss||ss.status!=="closed"||!(+v.owe>0))return;
+    out.push({pid:n.id,sid,owe:+v.owe,due:+v.due||+v.owe,name:v.nm||(selfDoc(n.id)||{}).name||"ผู้เล่น",date:ss.date||"",title:ss.title||"รอบเล่น"});});});
+  return out.sort((a,b)=>a.date.localeCompare(b.date)||a.name.localeCompare(b.name,"th"));
+}
+/* write the debts of the CURRENT closed round into the players' notes (only when something changed) */
+async function syncDebts(){
+  const s=curSession();if(!s||s.status!=="closed"||!DB.isOrg)return;
+  const pm=payModel();
+  for(const r of pm.rows){
+    const nt=((S.notes.find(x=>x.id===r.id)||{}).bySid||{})[s.id]||{},owe=Math.round(r.owe*100)/100;
+    if(owe>0&&(+nt.owe!==owe||+nt.due!==r.due||nt.nm!==r.name))await setNote(r.id,s.id,{owe,due:r.due,nm:r.name,debtAt:now()});
+    else if(owe<=0&&nt.owe)await setNote(r.id,s.id,{owe:"",due:"",nm:"",debtAt:""});
+  }
+}
+const debtSig={};let debtTimer=null;
+/* whenever who-owes-what changes in a closed round (receipts, adjustments, edits) the players' notes are brought up to date */
+function ensureDebtSync(){const s=curSession();if(!s||s.status!=="closed"||!DB.isOrg)return;
+  const sig=payModel().rows.map(r=>r.id+":"+Math.round(r.owe*100)+":"+r.due).join("|");
+  if(debtSig[s.id]===sig)return;debtSig[s.id]=sig;
+  clearTimeout(debtTimer);debtTimer=setTimeout(()=>syncDebts().catch(()=>{}),700);}
+/* money received later for a round that is already closed */
+async function receiveDebt(e,amount,method){
+  const add=Math.max(0,Math.min(Math.round(amount*100)/100,e.owe));if(!add)return false;
+  let ov=null;try{ov=await readDoc(`sessions/${e.sid}/pay/${e.pid}`);}catch(_){}ov={...(ov||{})};delete ov.id;
+  const paidBefore=ov.paidAmount!=null?+ov.paidAmount:Math.max(0,e.due-e.owe),by=DB.meName||"ผู้จัด";
+  const x={...ov,status:method==="transfer"?"verified":"cash",by,at:now(),paidAmount:Math.min(e.due,paidBefore+add),rec:[...(Array.isArray(ov.rec)?ov.rec:[]),{a:add,m:method==="transfer"?"transfer":"cash",at:now(),by,late:true}]};
+  delete x.note;delete x.adjReason;
+  const left=Math.max(0,Math.round((e.owe-add)*100)/100);
+  const ok=await write(`sessions/${e.sid}/pay/${e.pid}`,x,left?`รับ${METHOD_TH[method==="transfer"?"transfer":"cash"]} ${baht(add)} ฿ แล้ว — ค้างอีก ${baht(left)} ฿`:"รับเงินครบแล้ว — ปิดยอดค้าง");
+  if(!ok)return false;
+  await setNote(e.pid,e.sid,left?{owe:left}:{owe:"",due:"",nm:"",debtAt:""});
+  const ss=S.sessions.find(q=>q.id===e.sid);
+  if(ss&&ss.summary)await write(`sessions/${ss.id}`,{...stripId(ss),summary:{...ss.summary,owed:Math.max(0,Math.round(((+ss.summary.owed||0)-add)*100)/100)}});
+  logEv("รับเงินค้างรอบก่อน",`${e.name} · ${fmtD(e.date)} · ${METHOD_TH[method==="transfer"?"transfer":"cash"]} ${add} ฿${left?` (ค้างอีก ${left})`:" (ครบ)"}`);
+  return true;
+}
+function dlgDebtPay(e){
+  openDlg(`<form novalidate><h2>รับเงินค้าง · ${esc(e.name)}</h2>
+    <p class="small" style="margin:0 0 8px">รอบ ${esc(fmtD(e.date))} · ${esc(e.title)} · ยอดเต็ม ${baht(e.due)} ฿ · ค้างอยู่ <b>${baht(e.owe)} ฿</b></p>
+    <div class="fg">${intIn("amt","รับครั้งนี้ (฿)",e.owe,1,100000)}</div>
+    ${methodPick("cash")}
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึกรับเงิน</button></div></form>`,async f=>{
+    const a=checkInt(f,"amt",true);if(a===false)return false;if(a>e.owe)return fieldErr(f,"amt",`เกินยอดค้าง ${baht(e.owe)} ฿`);
+    return receiveDebt(e,a,f.elements.method.value);});
+}
+const methodPick=def=>`<div class="mpick" role="radiogroup" aria-label="วิธีรับเงิน"><label class="rd"><input type="radio" name="method" value="cash"${def==="cash"?" checked":""}><span><b>เงินสด</b></span></label><label class="rd"><input type="radio" name="method" value="transfer"${def==="transfer"?" checked":""}><span><b>โอน</b></span></label></div>`;
+function vDebts(){
+  const L=debtLedger(),legacy=S.sessions.filter(x=>x.status==="closed"&&x.summary&&+x.summary.owed>0&&!L.some(e=>e.sid===x.id));
+  if(!L.length&&!legacy.length)return "";
+  const by={};L.forEach(e=>{(by[e.pid]=by[e.pid]||{pid:e.pid,name:e.name,total:0,items:[]});by[e.pid].total+=e.owe;by[e.pid].items.push(e);});
+  const groups=Object.values(by).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name,"th")),sum=L.reduce((a,e)=>a+e.owe,0);
+  return `<section class="panel" id="debts"><div class="ph"><h2>ยอดค้างจ่ายสะสม</h2><span class="sp"></span>${L.length?`<button class="sm" data-act="copyDebts">คัดลอกรายชื่อ (ส่งกลุ่มไลน์)</button>`:""}</div>
+    <p class="small" style="margin:0 0 8px">คนที่จ่ายไม่ครบในรอบที่ปิดแล้ว <b>${groups.length} คน รวม ${baht(sum)} ฿</b> — คราวหน้าเขามาจ่ายเพิ่ม กดรับเงินที่นี่ได้เลย ระบบบันทึกเป็นประวัติและหักยอดค้างให้</p>
+    <div class="debts">${groups.map(g=>`<div class="debt"><div class="debt-h"><b>${esc(g.name)}</b><span class="chip s-warn">ค้าง ${baht(g.total)} ฿</span></div>${g.items.map(e=>`<div class="debt-r"><span class="small">${esc(fmtD(e.date))} · ${esc(e.title)}<br><b>${baht(e.owe)} ฿</b>${e.due!==e.owe?` <span class="muted">จาก ${baht(e.due)}</span>`:""}</span><span class="acts"><button class="sm" data-act="debtPay" data-k="cash" data-sid="${esc(e.sid)}" data-id="${esc(e.pid)}">รับสด</button><button class="sm" data-act="debtPay" data-k="transfer" data-sid="${esc(e.sid)}" data-id="${esc(e.pid)}">รับโอน</button><button class="ghost sm" data-act="debtPart" data-sid="${esc(e.sid)}" data-id="${esc(e.pid)}">บางส่วน</button></span></div>`).join("")}</div>`).join("")}</div>
+    ${legacy.length?`<p class="small muted" style="margin:10px 0 0">รอบที่ปิดไว้ก่อนมีลิสต์นี้: ${legacy.map(x=>`${esc(fmtD(x.date))} ค้าง ${baht(x.summary.owed)} ฿ <button class="ghost sm" data-act="gotoSess" data-id="${esc(x.id)}">เปิดรอบ</button>`).join(" · ")}</p>`:""}</section>`;
+}
 function vMoney(){
   const s=curSession();if(!s)return noSession();
   const c=priceCfg(curSession()),pm=payModel(),P=pm.pnl;
@@ -272,7 +414,7 @@ function vMoney(){
     <div class="kpi"><span class="k">รายรับที่ต้องเก็บ</span><span class="v">${baht(P.revenue)} ฿</span><span class="s">ค่าสนาม ${baht(P.revCourt)} + ค่าลูก ${baht(P.revShuttle)}</span></div>
     <div class="kpi"><span class="k">ต้นทุนผู้จัด</span><span class="v">${baht(P.cost)} ฿</span><span class="s">ค่าเช่า ${baht(P.rent)} + ลูก ${baht(P.costNew+P.costRepair)} + อื่น ๆ ${baht(P.other)}</span></div>
     <div class="kpi" style="border-color:${pc(P.profit)}"><span class="k">${P.profit>=0?"กำไร":"ขาดทุน"} (ถ้าเก็บครบ)</span><span class="v" style="color:${pc(P.profit)}">${sign(P.profit)} ฿</span><span class="s">${P.revenue?Math.round(P.profit/P.revenue*100):0}% ของรายรับ</span></div>
-    <div class="kpi" style="border-color:${pc(P.cashProfit)}"><span class="k">${P.cashProfit>=0?"กำไร":"ขาดทุน"} ตามเงินที่เก็บได้จริง</span><span class="v" style="color:${pc(P.cashProfit)}">${sign(P.cashProfit)} ฿</span><span class="s">เก็บแล้ว ${baht(P.collected)} ฿ · ${paid.length}/${pm.rows.length} คน</span></div>
+    <div class="kpi" style="border-color:${pc(P.cashProfit)}"><span class="k">${P.cashProfit>=0?"กำไร":"ขาดทุน"} ตามเงินที่เก็บได้จริง</span><span class="v" style="color:${pc(P.cashProfit)}">${sign(P.cashProfit)} ฿</span><span class="s">เก็บแล้ว ${baht(P.collected)} ฿ (สด ${baht(P.collectedCash)} · โอน ${baht(P.collectedTransfer)}) · ${paid.length}/${pm.rows.length} คน</span></div>
   </section>`;
   if(!c.shuttleCost||P.rent===0)h+=`<div class="notice warn">${P.rent===0?"ยังไม่ได้ใส่ค่าเช่าคอร์ดของรอบนี้ ":""}${!c.shuttleCost?"ยังไม่ได้ตั้งราคาทุนลูกใหม่ในหน้าตั้งค่า ":""}— กำไร/ขาดทุนจะยังไม่ตรงความจริง <button class="sm" data-act="${P.rent===0?"editCosts":"editCfg"}">ตั้งค่าตอนนี้</button></div>`;
   h+=`<div class="grid2"><section class="panel"><div class="ph"><h2>งบกำไรขาดทุนรอบนี้</h2><span class="sp"></span><button class="sm" data-act="editCosts">แก้ต้นทุน</button></div>
@@ -297,21 +439,23 @@ function vMoney(){
     <div class="bar" style="height:12px"><span style="width:${P.revenue?Math.min(100,P.collected/P.revenue*100):0}%;background:var(--ready)"></span></div>
     <p class="small">เก็บแล้ว <b>${baht(P.collected)}</b> จาก ${baht(P.revenue)} ฿ · รอตรวจสลิป ${pm.rows.filter(r=>r.state==="pending").length} คน · ยังไม่จ่าย ${pm.rows.filter(r=>r.state==="unpaid"||r.state==="rejected").length} คน${pm.rows.some(r=>r.state==="partial")?` · ค้างเพิ่ม ${pm.rows.filter(r=>r.state==="partial").length} คน`:""}</p>
     ${pm.rows.some(r=>r.owe>0)?'<p style="margin:0 0 8px"><button class="sm" data-act="copyUnpaid">คัดลอกรายชื่อค้างจ่าย (ส่งในกลุ่มไลน์)</button></p>':""}
+    <p style="margin:0 0 8px"><button class="sm" data-act="qrOpen">QR จ่ายเงิน${S.payqr&&(S.payqr.img||S.payqr.pp)?" (บันทึก / ส่งเข้า LINE)":" — ตั้งค่า"}</button></p>
     <p class="small muted">ยังต้องเก็บอีก ${baht(Math.max(0,P.revenue-P.collected))} ฿ ${P.collected<P.cost?`· ตอนนี้ยังไม่คืนทุน (ขาดอีก ${baht(P.cost-P.collected)} ฿)`:"· คืนทุนแล้ว"}</p>
   </section></div>`;
   h+=`<section class="panel"><div class="ph"><h2>รายการชำระเงินรายคน</h2><span class="sp"></span><button data-act="exportXlsx">ส่งออก Excel</button></div>
     ${pm.rows.length?`<div class="tw"><table class="paytbl"><thead><tr><th>ผู้เล่น</th><th class="n">เกม</th><th class="n">ค่าสนาม</th><th class="n">ค่าลูก</th><th class="n">ยอด (฿)</th><th>สถานะ</th><th>สลิป</th><th></th></tr></thead><tbody>${pm.rows.map(r=>`<tr>
       <td class="c-name"><b>${esc(r.name)}</b></td>
-      <td class="c-meta">${r.noShowPart?`ค่าปรับไม่มา ${baht(r.noShowPart)}`:`ค่าสนาม ${baht(r.courtPart)} + ค่าลูก ${baht(r.shuttlePart)} (${r.myShuttles} ลูก)`} · ${r.games} เกม${r.helped?` · ช่วยแทน ${r.helped} เกม (ไม่คิดค่าลูก)`:""}${r.leftEarly?` · ออกกลางเกม ${r.leftEarly} (ยังคิดค่าลูก)`:""}</td>
+      <td class="c-meta">${r.noShowPart?`ค่าปรับไม่มา ${baht(r.noShowPart)}`:`ค่าสนาม ${baht(r.courtPart)} + ค่าลูก ${baht(r.shuttlePart)} (${r.myShuttles} ลูก)`} · ${r.games} เกม${r.helped?` · ช่วยแทน ${r.helped} เกม (ไม่คิดค่าลูก)`:""}${r.leftEarly?` · ออกกลางเกม ${r.leftEarly} (ยังคิดค่าลูก)`:""}${r.myFree?` · เกมฟรี ${r.myFree} เกม (ลูกซ่อม)${r.freeOnly?" — เล่นเฉพาะเกมฟรี ไม่คิดค่าสนาม":""}`:""}${recLine(r)}</td>
       <td class="n c-games" data-l="เกม">${r.games}</td>
       <td class="n c-court" data-l="${r.noShowPart?"ค่าปรับไม่มา":"ค่าสนาม"}">${baht(r.noShowPart||r.courtPart)}</td>
       <td class="n c-shut" data-l="ค่าลูก">${baht(r.shuttlePart)}<div class="small muted">${r.myShuttles} ลูก</div></td>
       <td class="n c-due"><b>${baht(r.due)}</b>${r.adjusted?' <span class="small muted">(ปรับ)</span>':""}</td>
       <td class="c-st">${payChip(r)}</td>
       <td class="c-slip">${r.slip?`<button class="sm" data-act="viewSlip" data-id="${esc(r.id)}">ดูสลิป ${baht(r.slip.amount)} ฿</button>`:'<span class="muted small nos">–</span>'}</td>
-      <td class="c-act"><div class="acts">${r.state!=="paid"?`<button class="sm" data-act="cashPaid" data-id="${esc(r.id)}">รับเงินสด${r.state==="partial"?` ${baht(r.owe)} ฿`:""}</button>`:`<button class="ghost sm" data-act="unpay" data-id="${esc(r.id)}">ยกเลิกสถานะจ่าย</button>`}${r.state!=="paid"&&r.owe>1?`<button class="ghost sm" data-act="partialPay" data-id="${esc(r.id)}">รับบางส่วน</button>`:""}<button class="ghost sm" data-act="adjustDue" data-id="${esc(r.id)}">ปรับยอด</button></div></td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีผู้เล่นที่ต้องชำระ (นับเฉพาะผู้ที่เช็คอินหรือเล่นแล้ว)</div>`}
+      <td class="c-act"><div class="acts">${r.state!=="paid"?`<button class="sm" data-act="cashPaid" data-id="${esc(r.id)}">รับเงินสด${r.state==="partial"?` ${baht(r.owe)} ฿`:""}</button><button class="sm" data-act="transferPaid" data-id="${esc(r.id)}">รับโอน${r.state==="partial"?` ${baht(r.owe)} ฿`:""}</button>`:(r.recs.length||r.paidAmt>0)?`<button class="ghost sm" data-act="unpay" data-id="${esc(r.id)}">ยกเลิกสถานะจ่าย</button>`:""}${r.state!=="paid"&&r.owe>1?`<button class="ghost sm" data-act="partialPay" data-id="${esc(r.id)}">รับบางส่วน</button>`:""}<button class="ghost sm" data-act="adjustDue" data-id="${esc(r.id)}">ปรับยอด</button>${r.state!=="paid"&&r.owe>0&&S.payqr&&S.payqr.pp?`<button class="ghost sm" data-act="qrPay" data-id="${esc(r.id)}">QR ยอด ${baht(Math.ceil(r.owe))}</button>`:""}</div></td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีผู้เล่นที่ต้องชำระ (นับเฉพาะผู้ที่เช็คอินหรือเล่นแล้ว)</div>`}
   </section>`;
-  h+=vMonthly();
+  h+=vDebts()+vMonthly();
+  ensureDebtSync();
   return h;
 }
 
@@ -328,8 +472,9 @@ function refreshSummary(tries=0){
     const s=curSession();if(!s||s.id!==sid||!DB.isOrg)return;
     if(s.status!=="closed"||S.matches.some(m=>m.status==="playing"||m.status==="queued")){if(tries<6)refreshSummary(tries+1);return;}
     const sm=sessionSummary(),o=s.summary||{};
-    if(SUM_KEYS.every(k=>o[k]===sm[k]))return;
+    if(SUM_KEYS.every(k=>o[k]===sm[k])){await syncDebts();return;}
     await write(`sessions/${s.id}`,{...stripId(s),summary:{...sm,at:now()}});
+    await syncDebts();
   },tries?900:1300);
 }
 function vMonthly(){
@@ -337,7 +482,7 @@ function vMonthly(){
   const has=closed.filter(s=>s.summary&&s.date),miss=closed.length-has.length;
   const byM={};has.forEach(s=>{const k=s.date.slice(0,7);(byM[k]=byM[k]||[]).push(s);});
   const months=Object.keys(byM).sort().reverse();
-  const mName=k=>{const [y,m]=k.split("-").map(Number);return new Date(y,m-1,1).toLocaleDateString("th-TH",{month:"long",year:"numeric"});};
+  const mName=k=>{const [y,m]=k.split("-").map(Number);return new Date(y,m-1,1).toLocaleDateString(LOC(),{month:"long",year:"numeric"});};
   const sign=n=>`${n<0?"−":n>0?"+":""}${baht(Math.abs(n))}`,col=n=>n>0?"var(--ready)":n<0?"var(--bad)":"var(--muted)";
   const T=a=>({n:a.length,owed:a.reduce((x,s)=>x+(+s.summary.owed||0),0),rev:a.reduce((x,s)=>x+s.summary.revenue,0),cost:a.reduce((x,s)=>x+s.summary.cost,0),profit:a.reduce((x,s)=>x+s.summary.profit,0),pl:a.reduce((x,s)=>x+s.summary.players,0)});
   const all=T(has);
@@ -369,10 +514,16 @@ function vStock(){
     <div class="kpi"><span class="k">ใช้ในรอบนี้</span><span class="v">${usedToday}</span><span class="s">ลูกใหม่ · ลูกซ่อม ${repairToday} ลูก</span></div>
     <div class="kpi ${s&&shuttleItem&&left<need?"alert":""}"><span class="k">ควรเตรียมสำหรับรอบนี้</span><span class="v">${s?need:"–"}</span><span class="s">${courts} คอร์ด ${Math.abs(chrs-courts*hours)<0.01?"× "+hours.toFixed(1)+" ชม.":"· รวม "+(Math.round(chrs*100)/100)+" ชม.-คอร์ด"} × ${c.perCourtHour} ลูก + เผื่อ ${c.buffer}%</span></div>
   </section>`;
+  {const NEW=inv.find(i=>i.shuttle),REP=inv.find(i=>i.repair),lf=i=>i?Math.max(0,i.total-i.used):0;
+   h+=`<section class="panel"><div class="ph"><h2>เพิ่มสต็อกลูกแบด</h2><span class="muted small">เกมที่จบแล้วหักสต็อกให้อัตโนมัติ — ลูกใหม่ที่ใช้ ${usedToday} · ลูกซ่อม ${repairToday} ในรอบนี้</span></div>
+    <div class="shpair">
+      <div class="shtile${NEW&&lf(NEW)<=NEW.threshold?" low":""}"><span class="k">ลูกใหม่ (ลูกจริง)</span><span class="v num">${NEW?lf(NEW):0}</span><span class="small muted">คงเหลือ${NEW?` · แจ้งเตือนเมื่อ ≤ ${NEW.threshold}`:" · ยังไม่มีรายการ"}</span><button class="primary" data-act="shuttleIn" data-k="new">+ เพิ่มลูกใหม่</button></div>
+      <div class="shtile${REP&&lf(REP)<=REP.threshold&&REP.threshold>0?" low":""}"><span class="k">ลูกซ่อม</span><span class="v num">${REP?lf(REP):0}</span><span class="small muted">คงเหลือ${REP?"":" · ยังไม่มีรายการ"}</span><button class="primary" data-act="shuttleIn" data-k="repair">+ เพิ่มลูกซ่อม</button></div>
+    </div></section>`;}
   if(s&&shuttleItem&&left<need)h+=`<div class="notice warn">ลูกแบดคงเหลือ ${left} ลูก น้อยกว่าที่ควรเตรียม ${need} ลูก — ควรซื้อเพิ่ม ${need-left} ลูก</div>`;
   h+=`<div class="grid2"><section class="panel"><div class="ph"><h2>สต็อก</h2><span class="sp"></span><button data-act="addItem">+ เพิ่มรายการ</button></div>
-    ${inv.length?`<div class="tw"><table><thead><tr><th>รายการ</th><th class="n">ทั้งหมด</th><th class="n">ใช้ไป</th><th class="n">คงเหลือ</th><th></th></tr></thead><tbody>${inv.map(i=>{const l=i.total-i.used;return `<tr><td><b>${esc(i.name)}</b>${i.shuttle?' <span class="chip s-queued">ลูกใหม่ · หักอัตโนมัติ</span>':i.repair?' <span class="chip s-off">ลูกซ่อม · หักอัตโนมัติ</span>':""}</td><td class="n">${i.total}</td><td class="n">${i.used}</td><td class="n" style="${l<=i.threshold?"color:var(--warn);font-weight:700":""}">${l} ${esc(i.unit||"")}</td>
-      <td><div class="acts"><button class="sm" data-act="stockAdd" data-id="${esc(i.id)}">+ รับเข้า</button><button class="sm" data-act="stockUse" data-id="${esc(i.id)}">− ใช้</button><button class="ghost sm" data-act="editItem" data-id="${esc(i.id)}">แก้ไข</button></div></td></tr>`;}).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีรายการ — เพิ่ม "ลูกแบด" และตั้งเป็นรายการที่หักอัตโนมัติจากผลเกม</div>`}</section>
+    ${inv.length?`<div class="tw"><table class="stktbl"><thead><tr><th>รายการ</th><th class="n">ทั้งหมด</th><th class="n">ใช้ไป</th><th class="n">คงเหลือ</th><th></th></tr></thead><tbody>${inv.map(i=>{const l=i.total-i.used;return `<tr><td class="c-name"><b>${esc(i.name)}</b>${i.shuttle?' <span class="chip s-queued">ลูกใหม่ · หักอัตโนมัติ</span>':i.repair?' <span class="chip s-off">ลูกซ่อม · หักอัตโนมัติ</span>':""}</td><td class="n c-tot" data-l="ทั้งหมด">${i.total}</td><td class="n c-used" data-l="ใช้ไป">${i.used}</td><td class="n c-left" data-l="คงเหลือ" style="${l<=i.threshold?"color:var(--warn);font-weight:700":""}">${l} ${esc(i.unit||"")}</td>
+      <td class="c-act"><div class="acts"><button class="sm" data-act="stockAdd" data-id="${esc(i.id)}">+ รับเข้า</button><button class="sm" data-act="stockUse" data-id="${esc(i.id)}">− ใช้</button><button class="ghost sm" data-act="editItem" data-id="${esc(i.id)}">แก้ไข</button></div></td></tr>`;}).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีรายการ — เพิ่ม "ลูกแบด" และตั้งเป็นรายการที่หักอัตโนมัติจากผลเกม</div>`}</section>
     <section class="panel"><div class="ph"><h2>เช็กลิสต์อุปกรณ์รอบนี้</h2><span class="muted small">${s?esc(fmtD(s.date)):""}</span></div>
     ${s?`<div class="check">${CHECK.map(([k,t])=>`<label><input type="checkbox" data-act="prep" data-k="${k}" ${prep[k]?"checked":""}>${t}</label>`).join("")}</div><p class="small muted">${CHECK.filter(([k])=>prep[k]).length}/${CHECK.length} พร้อม</p>`:"<div class='empty'>เลือกรอบเล่นก่อน</div>"}</section></div>`;
   return h;
@@ -415,6 +566,7 @@ function vSettings(){
   ${DB.mode==="local"?`<section class="panel"><div class="ph"><h2>สำรองข้อมูล</h2></div>
     <p class="small" style="margin:0 0 10px">โหมดเครื่องเดียว เก็บข้อมูลไว้ในเบราว์เซอร์นี้ — ถ้าล้างข้อมูลเบราว์เซอร์หรือเปลี่ยนเครื่อง ข้อมูลจะหาย <b>ควรดาวน์โหลดไฟล์สำรองเป็นระยะ</b></p>
     <div class="acts"><button class="primary" data-act="exportBackup">ดาวน์โหลดไฟล์สำรอง (.json)</button><button class="ghost" data-act="importBackup">กู้คืนจากไฟล์สำรอง</button></div></section>`:""}
+  ${LIC.on?LIC.panel():""}
   ${DB.mode==="gh"?GHUI.settingsPanel():`<section class="panel"><h2>การใช้งานร่วมกับผู้เล่น</h2><ul class="small" style="margin:8px 0 0;padding-left:1.2em;display:grid;gap:4px">
     <li>แชร์ลิงก์หน้านี้ให้ผู้เล่นผ่านเมนู Share ของ claude.ai</li>
     <li>ผู้เล่นที่เป็นสมาชิกองค์กรเดียวกันและได้สิทธิ์ <b>Contributor</b> ลงชื่อ ส่งคำขอคู่ เช็คอิน อัปโหลดสลิป และโพสต์บอร์ดได้เอง</li>
@@ -443,6 +595,9 @@ function dlgSession(s){
     ${intIn("sets","จำนวนเซตต่อเกม (เว้นว่าง = ค่าตั้งต้น "+setsOf(null)+")",s.sets||"",1,9,"ค่าตั้งต้น")}
     <label class="f">เวลาเริ่ม<input type="time" name="start" value="${esc(s.start)}" required></label>
     <label class="f">เวลาเลิก<input type="time" name="end" value="${esc(s.end)}" required><span class="ferr"></span></label>
+    <div class="full round2box"><b>รอบที่ 2 (ไม่บังคับ)</b><p class="small muted" style="margin:2px 0 8px">คนที่ลงชื่อไม่ทันรอบแรกจะลงรอบที่ 2 ได้ — ระบบไม่สุ่มเขาเข้าเกมก่อนเวลานั้น แต่เช็คอินล่วงหน้าได้ และถ้ารอบแรกมีคนยกเลิก จะเลื่อนคนที่ขอไว้ขึ้นมาให้</p>
+      <div class="fg"><label class="f">เริ่มรอบที่ 2 (เว้นว่าง = ไม่มีรอบ 2)<input type="time" name="round2Start" value="${esc(s.round2Start||"")}"><span class="ferr"></span></label>
+      ${intIn("round2Max","รับเพิ่มรอบที่ 2 (คน)",s.round2Max||"",1,200,"เช่น 5")}</div></div>
     <label class="f full">ชื่อคอร์ด (คั่นด้วย ,)<input name="courts" value="${esc((s.courts||[]).join(", "))}" placeholder="เช่น 1, 2, 3"><span class="ferr"></span></label>
     ${intIn("courtRent","ค่าเช่าที่ผู้จัดจ่าย (฿/คอร์ด/ชั่วโมง)",s.courtRent!=null?s.courtRent:(cfg().courtRent||0),0,100000)}
     ${intIn("otherFee","ค่าใช้จ่ายอื่นของผู้จัด (฿)",s.otherFee||0,0,1000000)}
@@ -453,6 +608,10 @@ function dlgSession(s){
     if(!fv(f,"date"))return fieldErr(f,"date","กรุณาเลือกวันที่");
     const mp=checkInt(f,"maxPlayers",true);if(mp===false)return false;
     if(toMin(fv(f,"end"))===toMin(fv(f,"start")))return fieldErr(f,"end","เวลาเลิกต้องไม่ตรงกับเวลาเริ่ม (ถ้าเลยเที่ยงคืน ใส่เวลาเลิกของวันถัดไปได้เลย)");
+    const r2=fv(f,"round2Start");let r2m=null;
+    if(r2){const rel=m=>((toMin(m)-toMin(fv(f,"start")))%1440+1440)%1440,span=rel(fv(f,"end"))||1440;
+      if(!rel(r2)||rel(r2)>=span)return fieldErr(f,"round2Start","เวลารอบที่ 2 ต้องอยู่หลังเวลาเริ่มและก่อนเวลาเลิก");
+      r2m=checkInt(f,"round2Max");if(r2m===false)return false;}
     const courts=fv(f,"courts").split(/[,，]/).map(x=>x.trim()).filter(Boolean);
     if(!courts.length)return fieldErr(f,"courts","ต้องมีอย่างน้อย 1 คอร์ด");
     if(new Set(courts).size!==courts.length)return fieldErr(f,"courts","ชื่อคอร์ดซ้ำกัน");
@@ -463,8 +622,8 @@ function dlgSession(s){
       if(gone.some(c=>S.matches.some(m=>(m.status==="playing"||m.status==="queued")&&m.court===c)))return fieldErr(f,"courts","คอร์ดที่เอาออกยังมีเกมเล่นอยู่หรือมีคู่ในคิว — จบเกม/ยกเลิกคู่ก่อน");}
     // courts that already had an "added at" time keep it; a court typed in here after the session has started is rented only from now
     const meta={};courts.forEach(c=>{if(s.courtMeta&&s.courtMeta[c])meta[c]=s.courtMeta[c];else if(!isNew&&(s.courts||[]).length&&!(s.courts||[]).includes(c)&&now()>=sessStartEpoch({date:fv(f,"date"),start:fv(f,"start")}))meta[c]={from:hm(now()),addedAt:now()};});
-    const data={...(isNew?{createdAt:now(),status:"open"}:s),title,date:fv(f,"date"),start:fv(f,"start"),end:fv(f,"end"),courts,maxPlayers:mp,courtRent:cr,otherFee:of||0,desc:fv(f,"desc"),sets:sets||null,courtMeta:meta};
-    delete data.id;delete data.courtFee;if(!data.sets)delete data.sets;if(!Object.keys(meta).length)delete data.courtMeta;
+    const data={...(isNew?{createdAt:now(),status:"open"}:s),title,date:fv(f,"date"),start:fv(f,"start"),end:fv(f,"end"),courts,maxPlayers:mp,courtRent:cr,otherFee:of||0,desc:fv(f,"desc"),sets:sets||null,courtMeta:meta,round2Start:r2||null,round2Max:r2&&r2m?r2m:null};
+    delete data.id;delete data.courtFee;if(!data.sets)delete data.sets;if(!data.round2Start){delete data.round2Start;delete data.round2Max;}else if(!data.round2Max)delete data.round2Max;if(!Object.keys(meta).length)delete data.courtMeta;
     const ok=await write(`sessions/${id}`,data,isNew?"สร้างรอบเล่นแล้ว":"บันทึกแล้ว");
     if(ok&&isNew){selectSession(id);}
     return ok;
@@ -550,11 +709,11 @@ function dlgClose(){
     ${playing.length?`<div class="notice warn"><b>ยังมีเกมเล่นอยู่ ${playing.length} คอร์ด</b> (คอร์ด ${esc(playing.map(m=>m.court).join(", "))})
       <label class="f" style="margin-top:8px;color:inherit">จัดการเกมที่ค้าง<select name="playing"><option value="finish">จบเกม (ไม่บันทึกผล) · คิดค่าลูก</option><option value="cancel">ยกเลิกเกม · ไม่คิดค่าลูก</option></select></label>
       <div class="fg" style="margin-top:8px">${intIn("shuttles","ลูกใหม่ที่ใช้ต่อเกมที่ค้าง (ถ้าเลือกจบเกม)",1,0,30)}</div>
-      <span class="small">อยากบันทึกผลแพ้ชนะ? กด "ยกเลิก" แล้วใช้ปุ่ม "จบเกม / บันทึกผล" ที่การ์ดคอร์ดก่อน</span></div>`:""}
+      <span class="small">อยากบันทึกผลแพ้ชนะ? กด "ยังไม่ปิด" แล้วใช้ปุ่ม "จบเกม / บันทึกผล" ที่การ์ดคอร์ดก่อน</span></div>`:""}
     <ul class="small" style="margin:0;padding-left:1.2em;display:grid;gap:4px">
       ${queued.length?`<li>คู่ที่รอในคิว ${queued.length} คู่ — จะถูกยกเลิก</li>`:""}
       ${present.length?`<li>ผู้เล่นที่ยังไม่เช็คเอาท์ ${present.length} คน — ระบบเช็คเอาท์ให้ทั้งหมด</li>`:""}
-      <li>ยังไม่จ่าย ${unpaid.length} คน รวม <b>${baht(owed)} ฿</b> — ปิดรอบแล้วยังรับเงิน/ตรวจสลิปต่อได้</li>
+      <li>ยังไม่จ่าย ${unpaid.length} คน รวม <b>${baht(owed)} ฿</b> — จะเข้าลิสต์ “ยอดค้างจ่ายสะสม” (แท็บค่าใช้จ่าย) ปิดรอบแล้วยังรับเงิน/ตรวจสลิปต่อได้</li>
       <li>สรุปตอนนี้${playing.length?" (ยังไม่รวมเกมที่ค้าง)":""}: รายรับ ${baht(P.revenue)} − ต้นทุน ${baht(P.cost)} = <b>${sign(P.profit)} ฿</b></li>
       <li>ราคาของรอบนี้ถูกล็อกที่ราคาตอนปิด (เปลี่ยนราคาทีหลังไม่กระทบบิลรอบนี้) · เปิดรอบอีกครั้งได้ถ้าต้องแก้</li>
     </ul>
@@ -566,8 +725,9 @@ function dlgClose(){
     for(const m of S.matches.filter(x=>x.status==="playing")){
       const path=`sessions/${live.id}/matches/${m.id}`;
       if(mode==="cancel"){if(!await write(path,{...stripId(m),status:"cancelled",cancelledAt:t}))return false;}
-      else{if(!await write(path,{...stripId(m),status:"done",endAt:t,winner:"",sets:Array.from({length:N},()=>({w:"",s:""})),nsets:N,setsA:0,setsB:0,score:"",shuttles:sh,repair:0,closedWithRound:true}))return false;
-        deductStock(sh,0);}
+      else{const x=matchShuttles(m),shN=m.free?0:(x.explicit?x.sh:sh),rpN=x.explicit?x.rp:0;
+        if(!await write(path,{...stripId(m),status:"done",endAt:t,winner:"",sets:Array.from({length:N},()=>({w:"",s:""})),nsets:N,setsA:0,setsB:0,score:"",shuttles:shN,repair:rpN,closedWithRound:true}))return false;
+        deductStock(shN,rpN);}
     }
     for(const m of S.matches.filter(x=>x.status==="queued")){
       if(!await write(`sessions/${live.id}/matches/${m.id}`,{...stripId(m),status:"cancelled",cancelledAt:t}))return false;
@@ -580,7 +740,7 @@ function dlgClose(){
   });
 }
 function dlgEnd(m,edit){
-  const inv=(S.inv&&S.inv.items)||[],N=edit?((m.sets&&m.sets.length)||m.nsets||setsOf(curSession())):setsOf(curSession());
+  const inv=(S.inv&&S.inv.items)||[],N=edit?((m.sets&&m.sets.length)||m.nsets||setsOf(curSession())):(+m.setsN>0?+m.setsN:setsOf(curSession())),X=matchShuttles(m);
   const L=esc(m.a.map(nameOf).join(" + ")),R=esc(m.b.map(nameOf).join(" + "));
   const rows=Array.from({length:N},(_,i)=>`<div class="setrow"><span class="sn">เซต ${i+1}</span>
       <select name="sw${i}" aria-label="ผลเซต ${i+1}"><option value="">—</option><option value="a">ซ้ายชนะ</option><option value="b">ขวาชนะ</option><option value="d">เสมอ</option></select>
@@ -590,10 +750,12 @@ function dlgEnd(m,edit){
     <div class="vsline"><span class="ta">ซ้าย: ${L}</span><span class="tb">ขวา: ${R}</span></div>
     <div class="sets" data-n="${N}">${rows}</div>
     <div class="notice" id="resSum" role="status" style="margin:10px 0 4px"></div>
-    <div class="fg">${intIn("shuttles","ลูกใหม่ที่ใช้ (คิดเงิน)",edit?(m.shuttles||0):1,0,30)}${intIn("repair","ลูกซ่อมที่ใช้ (ไม่คิดเงิน)",edit?(m.repair||0):0,0,30)}</div>
-    <p class="small muted" style="margin:0">ใส่แค่ผู้ชนะของแต่ละเซต หรือใส่แค่คะแนน (ระบบดูผู้ชนะให้) · ชนะเซตเท่ากัน = เสมอ · ไม่ใส่เลย = ไม่บันทึกผล<br>${edit?"แก้ไขแล้วบิลของผู้เล่นและสต็อกลูกจะปรับตามอัตโนมัติ · เวลาพักไม่เปลี่ยน":`ผู้เล่นเริ่มพัก ${cfg().restMin} นาทีนับจากตอนนี้${inv.some(i=>i.shuttle||i.repair)?" · หักจากสต็อกอัตโนมัติ":""}`} · ค่าลูกใหม่ลูกละ ${unit(cfg().shuttleFee)} ฿${cfg().shuttleSplit==="shared"?" หาร 4":" ต่อคน"} — ผู้จ่าย: <b>${esc(payers)}</b>${m.orig?" (คนที่เริ่มเกม รวมคนที่ออกกลางเกม · คนที่เข้าแทนไม่จ่าย)":""}</p>
+    ${m.free?`<div class="notice" style="margin:0 0 8px"><b>เกมฟรี (ลูกซ่อม)</b> — ไม่คิดค่าลูกของผู้เล่น${m.setsN?` · ${m.setsN} เซต`:""}</div>`:""}
+    <div class="fg">${intIn("shuttles","ลูกใหม่ที่ใช้ (คิดเงิน)",m.free?0:(edit?(m.shuttles||0):X.sh),0,30)}${intIn("repair","ลูกซ่อมที่ใช้ (ไม่คิดเงิน)",edit?(m.repair||0):X.rp,0,30)}</div>
+    <p class="small muted" style="margin:0">ใส่แค่ผู้ชนะของแต่ละเซต หรือใส่แค่คะแนน (ระบบดูผู้ชนะให้) · ชนะเซตเท่ากัน = เสมอ · ไม่ใส่เลย = ไม่บันทึกผล<br>${edit?"แก้ไขแล้วบิลของผู้เล่นและสต็อกลูกจะปรับตามอัตโนมัติ · เวลาพักไม่เปลี่ยน":`ผู้เล่นเริ่มพัก ${cfg().restMin} นาทีนับจากตอนนี้${inv.some(i=>i.shuttle||i.repair)?" · หักจากสต็อกอัตโนมัติ":""}`}${m.free?"":` · ค่าลูกใหม่ลูกละ ${unit(cfg().shuttleFee)} ฿${cfg().shuttleSplit==="shared"?" หาร 4":" ต่อคน"} — ผู้จ่าย: <b>${esc(payers)}</b>${m.orig?" (คนที่เริ่มเกม รวมคนที่ออกกลางเกม · คนที่เข้าแทนไม่จ่าย)":""}`}</p>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">${edit?"บันทึกการแก้ไข":"บันทึกผล"}</button></div></form>`,async f=>{
-    const sh=checkInt(f,"shuttles",true);if(sh===false)return false;const rpr=checkInt(f,"repair",true);if(rpr===false)return false;
+    let sh=checkInt(f,"shuttles",true);if(sh===false)return false;const rpr=checkInt(f,"repair",true);if(rpr===false)return false;
+    if(m.free)sh=0;   // a free game uses repaired shuttles only
     if(sh+rpr>5&&f.dataset.okShuttles!==String(sh+"/"+rpr)){f.dataset.okShuttles=sh+"/"+rpr;return fieldErr(f,"shuttles",`ใช้ ${sh} ลูกใหม่ + ${rpr} ลูกซ่อมในเกมเดียว — ถูกต้องไหม? กด "${edit?"บันทึกการแก้ไข":"บันทึกผล"}" อีกครั้งเพื่อยืนยัน`);}
     const sets=readSets(f,N);if(!sets)return false;
     const live=S.matches.find(x=>x.id===m.id);if(!live||live.status!==(edit?"done":"playing")){toast(edit?"เกมนี้ไม่อยู่ในสถานะจบแล้ว":"เกมนี้ถูกบันทึกหรือยกเลิกไปแล้ว");return true;}
@@ -630,7 +792,7 @@ function readSets(f,N){const out=[];
   return out;}
 function dlgSwap(m){
   const roster=rosterModel(),ps=playerStats(),t=now(),running=m.status==="playing";
-  const cands=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!ps.get(p.id).inMatch);
+  const cands=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.notYet&&!ps.get(p.id).inMatch);
   openDlg(`<form novalidate><h2>เปลี่ยนตัวผู้เล่น · คอร์ด ${esc(m.court)}</h2><div class="fg">
     <label class="f">ผู้เล่นที่ออก<select name="out">${[...m.a,...m.b].map(id=>`<option value="${esc(id)}">${esc(nameOf(id))}</option>`).join("")}</select></label>
     <label class="f">ผู้เล่นที่เข้า<select name="in"><option value="">— เลือก —</option>${cands.map(p=>{const st=statusOf(p,ps,t);return `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(st.t)}</option>`;}).join("")}</select><span class="ferr"></span></label>
@@ -659,7 +821,7 @@ function dlgSwap(m){
 }
 function dlgManual(){
   const s=curSession();const roster=rosterModel(),ps=playerStats(),t=now();
-  const cands=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!ps.get(p.id).inMatch);
+  const cands=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.notYet&&!ps.get(p.id).inMatch);
   const opt=cands.map(p=>{const st=statusOf(p,ps,t);return `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(st.t)}</option>`;}).join("");
   const sel=n=>`<select name="${n}"><option value="">—</option>${opt}</select>`;
   openDlg(`<form novalidate><h2>จัดคู่เอง</h2><div class="fg">
@@ -696,6 +858,7 @@ function dlgCfg(){
     <h3 class="full" style="margin-top:6px">ราคาที่ผู้เล่นจ่าย</h3>
     ${intIn("playerCourtFee","ค่าสนาม (฿/คน/รอบ)",c.playerCourtFee,0,10000)}${decIn("shuttleFee","ค่าลูกใหม่ (฿/ลูก)",c.shuttleFee,0,1000)}
     <label class="f full">วิธีคิดค่าลูก<select name="shuttleSplit"><option value="each" ${c.shuttleSplit!=="shared"?"selected":""}>ทุกคนจ่ายลูกละ ${unit(c.shuttleFee)} ฿ (รวม ${unit(c.shuttleFee*4)}/ลูก)</option><option value="shared" ${c.shuttleSplit==="shared"?"selected":""}>ลูกละ ${unit(c.shuttleFee)} ฿ หาร 4 คน</option></select></label>
+    <label class="f full">ลูกที่ใช้เริ่มเกมตามปกติ<select name="shuttleDefault"><option value="new" ${c.shuttleDefault!=="repair"?"selected":""}>ลูกใหม่ (คิดเงิน) — ผู้เล่นขอลูกซ่อมเพิ่มได้ที่การ์ดคอร์ด</option><option value="repair" ${c.shuttleDefault==="repair"?"selected":""}>ลูกซ่อม (ฟรี) — ผู้เล่นขอลูกใหม่แล้วกด + ลูกใหม่ที่การ์ดคอร์ด</option></select></label>
     <h3 class="full" style="margin-top:6px">ต้นทุนของผู้จัด</h3>
     ${intIn("courtRent","ค่าเช่าคอร์ดตั้งต้น (฿/คอร์ด/ชม.)",c.courtRent,0,100000)}${intIn("perCourtHour","ลูกต่อคอร์ดต่อชั่วโมง (เตรียมสต็อก)",c.perCourtHour,0,20)}
     ${intIn("buffer","เผื่อลูกสำรอง (%)",c.buffer,0,200)}
@@ -707,7 +870,7 @@ function dlgCfg(){
     <label class="f" hidden>วิธีหารค่าใช้จ่าย<select name="split"><option value="equal" ${c.split==="equal"?"selected":""}>หารเท่ากัน</option><option value="games" ${c.split==="games"?"selected":""}>ตามจำนวนเกม</option></select></label>
     <label class="f full">ช่องทางชำระเงิน (แสดงให้ผู้เล่น)<textarea name="payInfo" maxlength="300" placeholder="เช่น พร้อมเพย์ 08x-xxx-xxxx ชื่อบัญชี ...">${esc(c.payInfo)}</textarea></label>
   </div><div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
-    const out={group:fv(f,"group")||CFG_DEF.group,balance:!!fv(f,"balance"),autoMutual:!!fv(f,"autoMutual"),autoAfterEnd:!!fv(f,"autoAfterEnd"),shuttleSplit:fv(f,"shuttleSplit")==="shared"?"shared":"each",payInfo:fv(f,"payInfo")};
+    const out={group:fv(f,"group")||CFG_DEF.group,balance:!!fv(f,"balance"),autoMutual:!!fv(f,"autoMutual"),autoAfterEnd:!!fv(f,"autoAfterEnd"),shuttleSplit:fv(f,"shuttleSplit")==="shared"?"shared":"each",shuttleDefault:fv(f,"shuttleDefault")==="repair"?"repair":"new",payInfo:fv(f,"payInfo")};
     for(const k of ["restMin","avgMin","setsPerGame","noShowMin","noShowFee","queueDepth","playerCourtFee","courtRent","perCourtHour","buffer"]){const v=checkInt(f,k,true);if(v===false)return false;out[k]=v;}
     {const v=checkDec(f,"shuttleFee",true);if(v===false)return false;out.shuttleFee=v;}   // the fee players pay must be filled in (0 = free)
     for(const k of ["shuttleCost","repairCost"]){const v=checkDec(f,k,false);if(v===false)return false;out[k]=v===null?0:v;}   // blank = cost not set
@@ -752,6 +915,19 @@ function dlgItem(it){
     items.push(o);return write("inventory/main",{...(S.inv||{}),items},"บันทึกสต็อกแล้ว");
   });
 }
+/* add shuttles to stock: new ones and repaired ones are counted separately; the stock line is created the first time */
+function dlgShuttleIn(kind){
+  const nw=kind==="new",flag=nw?"shuttle":"repair",it=((S.inv&&S.inv.items)||[]).find(i=>i[flag]);
+  openDlg(`<form novalidate><h2>เพิ่ม${nw?"ลูกใหม่":"ลูกซ่อม"}เข้าสต็อก</h2>
+    <p class="small" style="margin:0 0 8px">${nw?"ลูกใหม่ = ลูกจริงที่ซื้อมา (คิดเงินผู้เล่นเมื่อใช้)":"ลูกซ่อม = ลูกที่ซ่อม/คัดกลับมาใช้ (ไม่คิดเงินผู้เล่น)"} · ตอนนี้คงเหลือ <b>${it?Math.max(0,it.total-it.used):0}</b> ลูก</p>
+    <div class="fg">${intIn("n","จำนวนที่เพิ่ม (ลูก)",nw?12:6,1,100000)}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">เพิ่มเข้าสต็อก</button></div></form>`,async f=>{
+    const n=checkInt(f,"n",true);if(n===false)return false;
+    const inv=(S.inv&&S.inv.items)||[],cur=inv.find(i=>i[flag]);
+    const items=cur?inv.map(i=>i.id===cur.id?{...i,total:i.total+n}:i):[...inv,{id:uid("i"),name:nw?"ลูกแบด (ใหม่)":"ลูกซ่อม",unit:"ลูก",total:n,used:0,threshold:nw?12:0,[flag]:true}];
+    const ok=await write("inventory/main",{...(S.inv||{}),items},`เพิ่ม${nw?"ลูกใหม่":"ลูกซ่อม"} ${n} ลูกแล้ว — คงเหลือ ${items.find(i=>i[flag]).total-items.find(i=>i[flag]).used} ลูก`);
+    if(ok)logEv("เพิ่มสต็อก"+(nw?"ลูกใหม่":"ลูกซ่อม"),`+${n} ลูก`);return ok;});
+}
 function dlgStock(it,mode){
   openDlg(`<form novalidate><h2>${mode==="add"?"รับเข้า":"เบิกใช้"} · ${esc(it.name)}</h2><div class="fg">${intIn("n","จำนวน",mode==="add"?12:1,1,10000)}</div>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
@@ -773,17 +949,18 @@ function dlgCosts(){
     const ok=await write(`sessions/${s.id}`,d,"บันทึกแล้ว");if(ok)logEv("แก้ต้นทุน",`ค่าเช่า ${a} ฿/คอร์ด/ชม. · อื่น ๆ ${b} ฿`);return ok;
   });
 }
-/* cash received in part: the rest stays unpaid and can be collected later */
+/* money received in part (cash or transfer): the rest stays unpaid and can be collected later, even in a later round */
 function dlgPartial(r){
   openDlg(`<form novalidate><h2>รับเงินบางส่วน · ${esc(r.name)}</h2>
     <p class="small" style="margin:0 0 8px">ยอดที่ต้องจ่าย <b>${baht(r.due)} ฿</b> · รับแล้ว ${baht(r.paidAmt)} ฿ · ค้างอยู่ <b>${baht(r.owe)} ฿</b></p>
     <div class="fg">${intIn("amt","รับครั้งนี้ (฿)","",1,100000)}</div>
+    ${methodPick("cash")}
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึกรับเงิน</button></div></form>`,async f=>{
     const a=checkInt(f,"amt",true);if(a===false)return false;
     if(a>r.owe)return fieldErr(f,"amt",`เกินยอดค้าง ${baht(r.owe)} ฿`);
-    const s=curSession(),x={...(r.ov||{}),status:"cash",by:DB.meName||"ผู้จัด",at:now(),paidAmount:Math.min(r.due,r.paidAmt+a)};delete x.note;delete x.adjReason;
-    const ok=await write(`sessions/${s.id}/pay/${r.id}`,x,a>=r.owe?"รับเงินครบแล้ว":`รับ ${baht(a)} ฿ แล้ว — ค้างอีก ${baht(r.owe-a)} ฿`);
-    if(ok)logEv("รับเงินสดบางส่วน",`${r.name} ${a} ฿ (ค้างอีก ${Math.max(0,r.owe-a)})`);return ok;
+    const m=f.elements.method.value==="transfer"?"transfer":"cash",s=curSession(),x=receiptDoc(r,a,m);
+    const ok=await write(`sessions/${s.id}/pay/${r.id}`,x,a>=r.owe?"รับเงินครบแล้ว":`รับ${METHOD_TH[m]} ${baht(a)} ฿ แล้ว — ค้างอีก ${baht(r.owe-a)} ฿`);
+    if(ok)logEv(m==="transfer"?"รับโอนบางส่วน":"รับเงินสดบางส่วน",`${r.name} ${a} ฿ (ค้างอีก ${Math.max(0,r.owe-a)})`);return ok;
   });
 }
 function dlgAdjust(r){
@@ -817,7 +994,7 @@ async function migratePrivate(sid){
 }
 async function migrateAllSessions(){for(const s of S.sessions.slice())await migratePrivate(s.id);}
 function dlgViewSlip(r){
-  openDlg(`<div><h2>สลิป · ${esc(r.name)}</h2><p class="small"${+r.slip.amount!==r.owe?' style="color:var(--warn);font-weight:600"':""}>ยอดในสลิป ${baht(r.slip.amount)} ฿ (ยอดค้างจ่าย ${baht(r.owe)} ฿)${+r.slip.amount<r.owe?" — น้อยกว่ายอดค้าง":+r.slip.amount>r.owe?" — มากกว่ายอดค้าง":""} · ${esc(r.slip.method||"")} · ${new Date(r.slip.at).toLocaleString("th-TH")}</p>
+  openDlg(`<div><h2>สลิป · ${esc(r.name)}</h2><p class="small"${+r.slip.amount!==r.owe?' style="color:var(--warn);font-weight:600"':""}>ยอดในสลิป ${baht(r.slip.amount)} ฿ (ยอดค้างจ่าย ${baht(r.owe)} ฿)${+r.slip.amount<r.owe?" — น้อยกว่ายอดค้าง":+r.slip.amount>r.owe?" — มากกว่ายอดค้าง":""} · ${esc(r.slip.method||"")} · ${new Date(r.slip.at).toLocaleString(LOC())}</p>
     ${r.slip.img?`<img class="slipimg" src="${esc(r.slip.img)}" alt="สลิปโอนเงิน">`:"<div class='empty'>ไม่มีรูป</div>"}
     <label class="f" style="margin-top:10px">หมายเหตุ (ถ้าปฏิเสธ)<input id="slipNote" maxlength="100"></label></div>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ปิด</button><button type="button" class="danger" data-act="slipReject" data-id="${esc(r.id)}">ปฏิเสธ</button><button type="button" class="primary" data-act="slipOk" data-id="${esc(r.id)}">ยืนยันรับเงิน</button></div>`);
@@ -864,11 +1041,12 @@ async function exportXlsx(){
   X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","ระดับ","สถานะ","เช็คอิน","เกม","ชนะ","แพ้","เสมอ","ช่วยแทน (เกม)","นาที"],...roster.map(p=>{const x=ps.get(p.id);return [p.name,skLabel(p.skill),p.status,p.checkedIn?"ใช่":"",x.games,x.wins,x.losses,x.draws,x.helps,x.minutes];})]),"ผู้เล่น");
   X.book_append_sheet(wb,X.aoa_to_sheet([["คอร์ด","ทีมซ้าย","ทีมขวา","สถานะ","เริ่ม","จบ","ผลเกม","เซตซ้าย","เซตขวา","คะแนนรายเซต","ลูกใหม่","ลูกซ่อม","เปลี่ยนตัว"],...S.matches.map(m=>[m.court,m.a.map(nameOf).join(" + "),m.b.map(nameOf).join(" + "),m.status,m.startAt?hm(m.startAt):"",m.endAt?hm(m.endAt):"",m.status==="done"?resultText(m):"",m.setsA??"",m.setsB??"",m.score||"",m.shuttles||0,m.repair||0,(m.subs||[]).filter(x=>x.live).map(x=>nameOf(x.out)+"→"+nameOf(x.in)).join(", ")])]),"แมตช์");
   const P=pm.pnl;
-  X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","เกม","ลูกที่เล่น","ช่วยแทน (เกม)","ออกกลางเกม (เกม)","ค่าสนาม","ค่าลูก","ยอด (฿)","สถานะ","ยอดในสลิป","ค่าปรับไม่มา","จ่ายแล้ว","ค้างจ่าย"],...pm.rows.map(r=>[r.name,r.games,r.myShuttles,r.helped,r.leftEarly,r.courtPart,r.shuttlePart,r.due,{paid:"จ่ายแล้ว",partial:"จ่ายบางส่วน",pending:"รอตรวจ",rejected:"สลิปไม่ผ่าน",unpaid:"ยังไม่จ่าย"}[r.state],r.slip?r.slip.amount:"",r.noShowPart,r.paidAmt,r.owe])]),"ค่าใช้จ่ายผู้เล่น");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","เกม","ลูกที่เล่น","ช่วยแทน (เกม)","ออกกลางเกม (เกม)","ค่าสนาม","ค่าลูก","ยอด (฿)","สถานะ","ยอดในสลิป","ค่าปรับไม่มา","จ่ายแล้ว","ค้างจ่าย","รับเงินสด","รับโอน","เกมฟรี"],...pm.rows.map(r=>[r.name,r.games,r.myShuttles,r.helped,r.leftEarly,r.courtPart,r.shuttlePart,r.due,{paid:"จ่ายแล้ว",partial:"จ่ายบางส่วน",pending:"รอตรวจ",rejected:"สลิปไม่ผ่าน",unpaid:"ยังไม่จ่าย"}[r.state],r.slip?r.slip.amount:"",r.noShowPart,r.paidAmt,r.owe,r.cashAmt,r.transAmt,r.myFree||0])]),"ค่าใช้จ่ายผู้เล่น");
   X.book_append_sheet(wb,X.aoa_to_sheet([["งบกำไรขาดทุน",s.title||"",fmtD(s.date)],[],["รายรับ"],["ค่าสนาม",P.revCourt],["ค่าลูกใหม่",P.revShuttle],["ค่าปรับคนไม่มา",P.revNoShow],["ปรับยอด",P.adjust],["รวมรายรับ",P.revenue],[],["ต้นทุน"],["ค่าเช่าคอร์ด",P.rent],["ลูกใหม่",P.costNew],["ลูกซ่อม",P.costRepair],["อื่น ๆ",P.other],["รวมต้นทุน",P.cost],[],[P.profit>=0?"กำไรสุทธิ":"ขาดทุนสุทธิ",P.profit],["เก็บได้จริง",P.collected],["กำไร/ขาดทุนตามเงินจริง",P.cashProfit]]),"กำไรขาดทุน");
   // one row per closed round: the numbers frozen when the round was closed
   {const rows=S.sessions.filter(x=>x.status==="closed"&&x.summary).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
    if(rows.length)X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","รอบ","ผู้เล่น","เกม","ลูกใหม่","ลูกซ่อม","รายรับ","ต้นทุน","กำไร/ขาดทุน","ค้างเก็บ"],...rows.map(x=>[x.date,x.title||"",x.summary.players,x.summary.games,x.summary.shuttles,x.summary.repair,x.summary.revenue,x.summary.cost,x.summary.profit,x.summary.owed||0]),[],["รวม","","","","","",rows.reduce((a,x)=>a+x.summary.revenue,0),rows.reduce((a,x)=>a+x.summary.cost,0),rows.reduce((a,x)=>a+x.summary.profit,0),rows.reduce((a,x)=>a+(x.summary.owed||0),0)]]),"สรุปรายรอบ");}
+  {const L=debtLedger();if(L.length)X.book_append_sheet(wb,X.aoa_to_sheet([["ผู้เล่น","รอบ","วันที่","ยอดเต็ม","ค้างอยู่"],...L.map(e=>[e.name,e.title,e.date,e.due,e.owe]),[],["รวม","","","",L.reduce((a,e)=>a+e.owe,0)]]),"ค้างจ่ายสะสม");}
   const data=new Uint8Array(XLSX.write(wb,{bookType:"xlsx",type:"array"}));
   saveBytes(`badminton-${s.date}.xlsx`,data);
 }
@@ -927,10 +1105,26 @@ document.addEventListener("click",async e=>{
       if(resting.length&&!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยันเริ่ม (override)";toast(`${resting.map(nameOf).join(", ")} ยังพักไม่ครบ ${cfg().restMin} นาที — กดอีกครั้งเพื่อเริ่มโดย override`);return;}
       const ok=await write(`sessions/${s.id}/matches/${m.id}`,{...stripId(m),status:"playing",startAt:now()},"เริ่มเกมแล้ว");
       if(ok)logEv(resting.length?"เริ่มเกม (override กฎพัก)":"เริ่มเกม",`คอร์ด ${m.court}`);return;}
+    case "openInvite":closeDlg();return typeof dlgInvite==="function"&&dlgInvite();
+    case "qrSave":case "qrSend":{try{const blob=await payQrBlob(0,"");if(a==="qrSave"){QRS.save(blob,"qr-pay.png");toast("บันทึกรูปแล้ว");}else{const r=await QRS.share(blob,"qr-pay.png","สแกนจ่ายค่าเล่น");if(r==="saved")toast("บันทึกรูปแล้ว — แนบส่งใน LINE ได้เลย");}}catch(e){toast(e.message||"สร้างรูป QR ไม่ได้");}return;}
+    case "qrDel":{if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยันลบ";return;}const d={...(S.payqr||{})};delete d.id;delete d[b.dataset.k];
+      if(await write("cfg/pay",d,"ลบแล้ว"))setTimeout(dlgQr,150);return;}
+    case "qrOpen":return dlgQr();
+    case "qrPay":{const r=payModel().rows.find(x=>x.id===id);if(!r)return;return sendPayQr(Math.ceil(r.owe),`${r.name} · ${fmtD(s.date)}`,b);}
+    case "shuttleIn":return dlgShuttleIn(b.dataset.k==="repair"?"repair":"new");
     case "endMatch":return m&&dlgEnd(m);
+    case "freeGame":{if(!m)return;if(!m.free)return dlgFree(m);
+      const d={...stripId(m)};delete d.free;delete d.setsN;const dd=cfg().shuttleDefault==="repair"?{shuttles:0,repair:1}:{shuttles:1,repair:0};
+      if(await write(`sessions/${s.id}/matches/${m.id}`,{...d,...(m.status==="playing"?dd:{})},"เลิกเกมฟรีแล้ว — กลับมาคิดค่าลูกตามปกติ"))logEv("เลิกเกมฟรี",`คอร์ด ${m.court}`);return;}
+    case "shAdj":{if(!m||m.status!=="playing")return;const k=b.dataset.k,dlt=+b.dataset.d||0,x=matchShuttles(m);
+      if(m.free&&k==="new"){toast("เกมฟรีใช้ลูกซ่อมเท่านั้น");return;}
+      const nx={sh:Math.max(0,x.sh+(k==="new"?dlt:0)),rp:Math.max(0,x.rp+(k==="repair"?dlt:0))};if(nx.sh===x.sh&&nx.rp===x.rp)return;
+      const c=priceCfg(s),per=(c.shuttleSplit==="shared"?(+c.shuttleFee||0)/4:(+c.shuttleFee||0));
+      const ok=await write(`sessions/${s.id}/matches/${m.id}`,{...stripId(m),shuttles:nx.sh,repair:nx.rp},k==="new"?(dlt>0?`เพิ่มลูกใหม่ ${nx.sh} ลูก — คิดเงินผู้เล่น 4 คนในคอร์ด ${m.court} คนละ ${baht(Math.ceil(nx.sh*per))} ฿`:`ลดลูกใหม่เหลือ ${nx.sh} ลูก`):(dlt>0?`เพิ่มลูกซ่อม ${nx.rp} ลูก — ไม่คิดเงิน`:`ลดลูกซ่อมเหลือ ${nx.rp} ลูก`));
+      if(ok&&dlt>0)logEv(k==="new"?"เพิ่มลูกใหม่":"เพิ่มลูกซ่อม",`คอร์ด ${m.court}: ใหม่ ${nx.sh} · ซ่อม ${nx.rp}`);return;}
     case "copyAnnounce":{const c=priceCfg(s);
       const txt=`🏸 ${s.title||"ก๊วนแบด"}\n📅 ${fmtD(s.date)} · ${s.start||""}–${s.end||""} น.\n🏟 ${(s.courts||[]).length} คอร์ด · รับ ${s.maxPlayers||"-"} คน\n💰 ค่าสนาม ${baht(c.playerCourtFee)} ฿/คน + ค่าลูกใหม่ ${unit(c.shuttleFee)} ฿/ลูก${c.shuttleSplit==="shared"?" (หาร 4 คนในเกม)":" ต่อคน"}${s.desc?`\n\n${s.desc}`:""}\n\nลงชื่อได้ในแอปก๊วน`;
-      try{await navigator.clipboard.writeText(txt);toast("คัดลอกประกาศแล้ว — วางในกลุ่มไลน์ได้เลย");}
+      try{await navigator.clipboard.writeText(TT(txt));toast("คัดลอกประกาศแล้ว — วางในกลุ่มไลน์ได้เลย");}
       catch(_){openDlg(`<form novalidate><h2>ข้อความประกาศ</h2><textarea readonly style="min-height:200px">${esc(txt)}</textarea><div class="dlg-a"><button type="button" class="primary" data-close>ปิด</button></div></form>`,()=>true);}
       return;}
     case "gotoSess":{selectSession(id);tab="money";try{localStorage.setItem("bgo-tab",tab);}catch(_){}render();window.scrollTo(0,0);return;}
@@ -954,7 +1148,9 @@ document.addEventListener("click",async e=>{
     case "editPlayer":{const mem=S.members.find(x=>x.id===id);if(mem)return dlgMember(mem);const p=rosterModel().find(x=>x.id===id);return p&&dlgWalkin(p);}
     case "checkin":await rosterPatch(id,{checkedInAt:now(),checkedOutAt:null},"เช็คอินแล้ว");return;
     case "checkout":{const ps=playerStats();if(ps.get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวหรือจบเกมก่อน");return;}await rosterPatch(id,{checkedOutAt:now()},"เช็คเอาท์แล้ว");return;}
-    case "checkinAll":{const list=rosterModel().filter(p=>p.status==="confirmed"&&!p.checkedIn&&!p.checkedOutAt);for(const p of list)await rosterPatch(p.id,{checkedInAt:now()});toast(`เช็คอิน ${list.length} คน`);return;}
+    case "checkinAll":{const list=rosterModel().filter(p=>p.status==="confirmed"&&!p.checkedIn&&!p.checkedOutAt&&!p.notYet);/* round-2 players arrive later: check them in one by one */for(const p of list)await rosterPatch(p.id,{checkedInAt:now()});toast(`เช็คอิน ${list.length} คน`);return;}
+    case "moveRound":{const p=rosterModel().find(x=>x.id===id),R=roundsOf(s);if(!p||!R)return;if(playerStats().get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวก่อน");return;}
+      const to=(p.round||p.want)===2?1:2;await rosterPatch(id,{round:to},`ย้าย ${p.name} ไปรอบ ${to===2?R.start:s.start} แล้ว`);logEv("ย้ายรอบ",`${p.name} → รอบ ${to===2?R.start:s.start}`);return;}
     case "promote":await rosterPatch(id,{status:"confirmed"},"เลื่อนเป็นตัวจริงแล้ว");logEv("เลื่อนตัวสำรอง",nameOf(id));return;
     case "removeP":{const ps=playerStats();if(ps.get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวก่อน");return;}if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยัน";return;}await rosterPatch(id,{status:"removed"},"นำออกแล้ว");logEv("นำผู้เล่นออก",nameOf(id));return;}
     case "restore":await rosterPatch(id,{status:null},"คืนรายชื่อแล้ว");return;
@@ -972,18 +1168,29 @@ document.addEventListener("click",async e=>{
     case "exportXlsx":return exportXlsx();
     case "paySlip":return dlgSlip();
     case "viewSlip":{const r=payModel().rows.find(x=>x.id===id);return r&&r.slip&&dlgViewSlip(r);}
-    case "slipOk":case "slipReject":case "cashPaid":{if(a==="slipReject")await setNote(id,s.id,{rejectNote:(($("#slipNote")||{}).value||"").trim()});const r=payModel().rows.find(x=>x.id===id);if(!r)return;
-      const status=a==="slipOk"?"verified":a==="cashPaid"?"cash":"rejected";const note=a==="slipReject"?(($("#slipNote")||{}).value||""):"";
-      let amount=r.due;   // absolute amount paid so far; the full bill unless the slip is short
+    case "slipOk":case "slipReject":case "cashPaid":case "transferPaid":{if(a==="slipReject")await setNote(id,s.id,{rejectNote:(($("#slipNote")||{}).value||"").trim()});const r=payModel().rows.find(x=>x.id===id);if(!r)return;
+      const status=a==="slipOk"?"verified":a==="cashPaid"?"cash":a==="transferPaid"?"verified":"rejected";const note=a==="slipReject"?(($("#slipNote")||{}).value||""):"";
+      let add=r.owe;   // the whole amount still owed, unless the slip is short
       if(a==="slipOk"&&r.slip&&+r.slip.amount>0&&Math.round(+r.slip.amount)<r.owe){
         const got=Math.round(+r.slip.amount);
         if(!b.dataset.armed){b.dataset.armed="1";b.textContent=`รับ ${baht(got)} ฿ (ค้างอีก ${baht(r.owe-got)})`;toast(`สลิปโอน ${baht(got)} ฿ น้อยกว่ายอดค้าง ${baht(r.owe)} ฿ — กดอีกครั้งเพื่อรับ ${baht(got)} ฿ และยังค้างอีก ${baht(r.owe-got)} ฿`);return;}
-        amount=Math.min(r.due,r.paidAmt+got);}
-      if(await write(`sessions/${s.id}/pay/${id}`,(()=>{const x={...(r.ov||{}),status,by:DB.meName||"ผู้จัด",at:now(),...(status==="rejected"?{}:{paidAmount:amount})};delete x.note;delete x.adjReason;return x;})(),{verified:"ยืนยันรับเงินแล้ว",cash:"บันทึกรับเงินสดแล้ว",rejected:"ปฏิเสธสลิปแล้ว"}[status])){logEv({verified:"ยืนยันสลิป",cash:"รับเงินสด",rejected:"ปฏิเสธสลิป"}[status],`${r.name} ${status==="rejected"?r.due:amount-r.paidAmt+(amount===r.due?0:0)} ฿${amount<r.due&&status!=="rejected"?` (รับบางส่วน ค้างอีก ${r.due-amount})`:""}${note?" · "+note:""}`);closeDlg();}return;}
-    case "unpay":{const r=payModel().rows.find(x=>x.id===id);if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยัน";return;}if(await write(`sessions/${s.id}/pay/${id}`,{...(r.ov||{}),status:"",paidAmount:null,at:now()},"ยกเลิกสถานะจ่ายแล้ว"))logEv("ยกเลิกสถานะจ่าย",r.name);return;}
+        add=got;}
+      const doc=status==="rejected"?(()=>{const x={...(r.ov||{}),status,by:DB.meName||"ผู้จัด",at:now()};delete x.note;delete x.adjReason;return x;})()
+        :receiptDoc(r,add,a==="cashPaid"?"cash":"transfer",a==="slipOk"?{slip:true}:undefined);
+      if(await write(`sessions/${s.id}/pay/${id}`,doc,a==="transferPaid"?"บันทึกรับโอนแล้ว":{verified:"ยืนยันรับเงินแล้ว",cash:"บันทึกรับเงินสดแล้ว",rejected:"ปฏิเสธสลิปแล้ว"}[status])){logEv(a==="transferPaid"?"รับโอน":{verified:"ยืนยันสลิป",cash:"รับเงินสด",rejected:"ปฏิเสธสลิป"}[status],`${r.name} ${status==="rejected"?r.due:add} ฿${add<r.owe&&status!=="rejected"?` (รับบางส่วน ค้างอีก ${r.owe-add})`:""}${note?" · "+note:""}`);closeDlg();}return;}
+    case "debtPay":case "debtPart":{const e=debtLedger().find(x=>x.pid===id&&x.sid===b.dataset.sid);if(!e)return;
+      if(a==="debtPart")return dlgDebtPay(e);
+      if(!b.dataset.armed){b.dataset.armed="1";b.textContent=`ยืนยัน ${baht(e.owe)} ฿`;return;}
+      await receiveDebt(e,e.owe,b.dataset.k);return;}
+    case "copyDebts":{const L=debtLedger(),c=cfg();
+      const txt="ยอดค้างชำระสะสม\n"+L.map((e,i)=>`${i+1}. ${e.name} ${baht(e.owe)} บาท (${fmtD(e.date)})`).join("\n")+`\nรวม ${baht(L.reduce((a,e)=>a+e.owe,0))} บาท`+(c.payInfo?`\n\nช่องทางชำระ: ${c.payInfo}`:"");
+      try{await navigator.clipboard.writeText(TT(txt));toast("คัดลอกแล้ว — วางในกลุ่มไลน์ได้เลย");}
+      catch(_){openDlg(`<form novalidate><h2>รายชื่อค้างจ่ายสะสม</h2><textarea readonly style="min-height:220px">${esc(txt)}</textarea><div class="dlg-a"><button type="button" class="primary" data-close>ปิด</button></div></form>`,()=>true);}
+      return;}
+    case "unpay":{const r=payModel().rows.find(x=>x.id===id);if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยัน";return;}if(await write(`sessions/${s.id}/pay/${id}`,{...(r.ov||{}),status:"",paidAmount:null,rec:[],at:now()},"ยกเลิกสถานะจ่ายแล้ว"))logEv("ยกเลิกสถานะจ่าย",r.name);return;}
     case "copyUnpaid":{const pm=payModel();const c=cfg();
       const txt=`ค้างชำระ ${s.title||"ก๊วนแบด"} ${fmtD(s.date)}\n`+pm.rows.filter(r=>r.owe>0).map((r,i)=>`${i+1}. ${r.name} ${baht(r.owe)} บาท`).join("\n")+(c.payInfo?`\n\nช่องทางชำระ: ${c.payInfo}`:"");
-      try{await navigator.clipboard.writeText(txt);toast("คัดลอกแล้ว — วางในกลุ่มไลน์ได้เลย");}
+      try{await navigator.clipboard.writeText(TT(txt));toast("คัดลอกแล้ว — วางในกลุ่มไลน์ได้เลย");}
       catch(_){openDlg(`<form novalidate><h2>รายชื่อค้างจ่าย</h2><textarea readonly style="min-height:220px">${esc(txt)}</textarea><div class="dlg-a"><button type="button" class="primary" data-close>ปิด</button></div></form>`,()=>true);}
       return;}
     case "partialPay":{const r=payModel().rows.find(x=>x.id===id);return r&&dlgPartial(r);}

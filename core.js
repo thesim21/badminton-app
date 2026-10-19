@@ -7,14 +7,17 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const pad=n=>String(n).padStart(2,"0");
 const now=()=>Date.now();
 const MIN=60000;
+/* language: dates / numbers follow the UI language; TT() turns Thai text that leaves the page (clipboard, share, picture) into the UI language */
+const LOC=()=>typeof I18N!=="undefined"?I18N.loc:"th-TH";
+const TT=s=>typeof I18N!=="undefined"?I18N.t(s):s;
 const toISO=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const today=()=>toISO(new Date());
 const hm=ts=>{const d=new Date(ts);return `${pad(d.getHours())}:${pad(d.getMinutes())}`;};
-const fmtD=iso=>{if(!iso)return "";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString("th-TH",{weekday:"short",day:"numeric",month:"short",year:"2-digit"});};
+const fmtD=iso=>{if(!iso)return "";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString(LOC(),{weekday:"short",day:"numeric",month:"short",year:"2-digit"});};
 const mmss=ms=>{ms=Math.max(0,ms);const s=Math.floor(ms/1000);return `${Math.floor(s/60)}:${pad(s%60)}`;};
 const uid=p=>(p||"x")+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const loadScript=src=>new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>rej(new Error("load "+src));document.head.appendChild(s);});
-const baht=n=>(Math.round(n)||0).toLocaleString("th-TH");
+const baht=n=>(Math.round(n)||0).toLocaleString(LOC());
 let tt=null;function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(tt);tt=setTimeout(()=>el.hidden=true,2800);}
 /* Skill ladder used by Thai badminton groups and amateur tournaments (BG → A).
    c = the level code players already use, t = name, d = what a player at this level can do (for choosing honestly), w = weight for team balancing. */
@@ -134,12 +137,25 @@ function useApp(name){
 }
 window.addEventListener("hashchange",()=>{if(PAGE()!=="index")return;const want=location.hash==="#player"||!DB.realOrg?"player":"org";if(want!==APP.name)useApp(want);});
 /* ================= state ================= */
-const S={notes:[],cfg:null,sessions:[],selfDocs:[],posts:[],slips:[],mod:null,inv:null,members:[],
+const S={notes:[],payqr:null,cfg:null,sessions:[],selfDocs:[],posts:[],slips:[],mod:null,inv:null,members:[],
   sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null};
-const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2};
+const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2,shuttleDefault:"new"};
 const cfg=()=>({...CFG_DEF,...(S.cfg||{})});
+/* text people typed themselves (names, titles, notes, posts) is never translated: the English switch only changes the app's own wording */
+if(typeof I18N!=="undefined")I18N.protect(()=>{const o=[],add=v=>{if(typeof v==="string"&&v.length<400)o.push(v);},pick=(a,ks)=>(a||[]).forEach(x=>x&&ks.forEach(k=>add(x[k])));
+  pick(S.members,["name","nick","nickname","note"]);pick(S.selfDocs,["name","nick","nickname"]);pick(S.roster,["name","note"]);pick(S.sessions,["title","desc"]);
+  pick(S.posts,["author","title","text"]);(S.posts||[]).forEach(d=>(d.comments||[]).forEach(c=>{add(c.text);add(c.author);}));pick(S.decisions,["note"]);
+  (S.matches||[]).forEach(m=>(m.subs||[]).forEach(x=>add(x.reason)));
+  (S.notes||[]).forEach(n=>Object.values(n.bySid||{}).forEach(v=>{add(v.nm);add(v.adjReason);add(v.rejectNote);}));
+  const c=S.cfg||{};if(c.group&&c.group!==CFG_DEF.group)add(c.group);add(c.payInfo);if(S.payqr)add(S.payqr.ppName);
+  return o;});
 /* ---- game structure: sets per game · who started a game vs who only helped ---- */
 function setsOf(s){const n=s&&+s.sets>0?+s.sets:+cfg().setsPerGame;return n>0?Math.min(9,Math.round(n)):2;}
+/* shuttles of one game: what the organizer counted on the court card; until they touch it, the club's usual (new or repaired) is assumed */
+function matchShuttles(m){const d=cfg().shuttleDefault==="repair"?{sh:0,rp:1}:{sh:1,rp:0};
+  if(m&&m.free)return {sh:+m.shuttles||0,rp:m.repair!=null?+m.repair:1,free:true,explicit:true};
+  const ex=!!m&&(m.shuttles!=null||m.repair!=null);
+  return {sh:m&&m.shuttles!=null?+m.shuttles:d.sh,rp:m&&m.repair!=null?+m.repair:d.rp,free:false,explicit:ex};}
 const matchOnCourt=m=>[...((m&&m.a)||[]),...((m&&m.b)||[])];
 /* the four who started the game (m.orig is kept the first time somebody is swapped out of a running game) */
 const matchStarters=m=>{const o=m&&m.orig?m.orig:m;return [...((o&&o.a)||[]),...((o&&o.b)||[])];};
@@ -170,48 +186,82 @@ function rosterModel(){
   const trustAt=(id,claim)=>{const w=seen[id];return w&&w.claim===claim&&w.at?+w.at:Math.max(+claim||0,lastSeen+1);};
   const trustCi=(id,claim)=>{if(!claim)return null;const w=seen[id];return w&&w.ci===claim&&w.ciAt?+w.ciAt:Math.max(+claim,lastSeen+1);};
   S.selfDocs.forEach(d=>{const su=d.signups&&d.signups[s.id];if(!su)return;
-    if(su.cancelled){const dl0=checkinDeadline(s);
+    if(su.cancelled){const dl0=checkinDeadline(s,roundsOf(s)&&su.round===2?2:1);
       if(!(dl0&&+su.cancelledAt>dl0&&!su.checkedInAt&&!S.roster.some(r=>r.id===d.id&&r.checkedInAt))){cancelledAt[d.id]=su.cancelledAt||Infinity;return;}}   // cancelled after the check-in deadline = no-show, not a free cancel
-    map[d.id]={id:d.id,name:d.name||"ผู้เล่น",skill:sk(d.skill),account:true,signupAt:trustAt(d.id,su.at),claimAt:Math.max(+su.at||0,+s.createdAt||0),selfCheckIn:trustCi(d.id,su.checkedInAt),selfCheckOut:+su.checkedOutAt||null};});
+    map[d.id]={id:d.id,name:d.name||"ผู้เล่น",skill:sk(d.skill),account:true,signupAt:trustAt(d.id,su.at),claimAt:Math.max(+su.at||0,+s.createdAt||0),selfCheckIn:trustCi(d.id,su.checkedInAt),selfCheckOut:+su.checkedOutAt||null,chosen:su.round===2?2:1,early:su.round===2&&!!su.wantEarly};});
   S.roster.forEach(r=>{
     // the player cancelled after the organizer touched their row: the cancel wins unless the organizer re-added/checked them in later
     if(cancelledAt[r.id]&&!map[r.id]&&Math.max(+r.addedAt||0,+r.checkedInAt||0)<cancelledAt[r.id])return;
     const base=map[r.id]||{id:r.id,account:!r.walkin,signupAt:r.addedAt||0};
     if(!map[r.id]&&!r.walkin){const d=selfDoc(r.id);base.name=d?d.name:r.name;base.skill=d?d.skill:r.skill;}
     const mem=S.members.find(x=>x.id===r.id);
-    map[r.id]={...base,name:(mem&&mem.name)||r.name||base.name||"ผู้เล่น",skill:sk((mem&&mem.skill)||r.skill||base.skill),member:!!mem,walkin:!!r.walkin,override:r.status||null,checkedInAt:r.checkedInAt||null,checkedOutAt:Math.max(+r.checkedOutAt||0,+base.selfCheckOut||0)||null,note:r.note||""};
+    map[r.id]={...base,chosen:r.round===1||r.round===2?r.round:(base.chosen||1),early:r.round===1||r.round===2?false:!!base.early,name:(mem&&mem.name)||r.name||base.name||"ผู้เล่น",skill:sk((mem&&mem.skill)||r.skill||base.skill),member:!!mem,walkin:!!r.walkin,override:r.status||null,checkedInAt:r.checkedInAt||null,checkedOutAt:Math.max(+r.checkedOutAt||0,+base.selfCheckOut||0)||null,note:r.note||""};
   });
   const list=Object.values(map).sort((a,b)=>(a.signupAt||0)-(b.signupAt||0)||(a.claimAt||0)-(b.claimAt||0));
-  let n=0;const max=+s.maxPlayers||999;
+  const max=+s.maxPlayers||999,R=roundsOf(s);
   list.forEach(p=>{
     if(p.selfCheckOut&&!p.checkedOutAt)p.checkedOutAt=p.selfCheckOut;
     const ci=Math.max(+p.checkedInAt||0,+p.selfCheckIn||0);
     p.checkedIn=ci>0&&(!p.checkedOutAt||ci>p.checkedOutAt);     // checking in again after a check-out counts
-    if(p.override==="removed")p.status="removed";
-    else if(p.override==="confirmed"||p.override==="reserve")p.status=p.override;
-    else if(p.checkedInAt)p.status="confirmed";                     // the organizer checked them in at the venue: they play even if the list is full
-    else p.status=n<max?"confirmed":"reserve";
-    if(p.status==="confirmed")n++;
-    p.origConfirmed=p.status==="confirmed";p.ciAt=ci;
+    p.ciAt=ci;
   });
-  /* NO-SHOW: after the check-in deadline, confirmed players who have not checked in lose their place.
-     Places go to checked-in players: those who arrived on time first, then latecomers and reserves in the order they checked in. */
-  const dl=checkinDeadline(s);list.deadline=dl;list.openSlots=0;
+  /* seats: who is in round 1, who is in round 2, who waits (see seatPlan) */
+  const plan=seatPlan(list.map(p=>({id:p.id,chosen:p.chosen||1,early:!!p.early,fix:p.override==="removed"?"removed":(p.override==="confirmed"||p.override==="reserve")?p.override:p.checkedInAt?"confirmed":""})),s);
+  list.forEach(p=>{const x=plan[p.id];p.status=x.status;p.round=x.round||0;p.want=x.want||0;p.no=x.no||0;p.rsvNo=x.rsvNo||0;p.upgraded=!!x.up;p.origConfirmed=p.status==="confirmed";});
+  /* NO-SHOW: after the check-in deadline of a round, confirmed players of that round who have not checked in lose their place.
+     Places go to checked-in players: those who arrived on time first, then latecomers and reserves in the order they checked in.
+     Round 2 has its own deadline (round 2 start + noShowMin). Someone in round 2 who asked for round 1 can also take a freed round-1 place. */
+  const dl=checkinDeadline(s,1),dl2=R?checkinDeadline(s,2):null;list.deadline=dl;list.deadline2=dl2;list.openSlots=0;list.openSlots2=0;list.rounds=R;
   const asOf=s.status==="closed"?Math.min(now(),+s.closedAt||sessEndEpoch(s)||0):now();    // a closed round keeps the no-shows it had when it closed
-  if(dl&&asOf>dl){
-    const played=new Set(S.matches.filter(m=>m.status!=="cancelled").flatMap(m=>matchEveryone(m)));
-    const fixed=p=>p.override||p.checkedInAt||played.has(p.id);
-    let n2=list.filter(p=>p.status==="confirmed"&&fixed(p)).length;
-    list.filter(p=>!fixed(p)&&p.checkedIn).sort((a,b)=>((a.origConfirmed&&a.ciAt<=dl)?0:1)-((b.origConfirmed&&b.ciAt<=dl)?0:1)||a.ciAt-b.ciAt)
-      .forEach(p=>{p.status=n2<max?"confirmed":"reserve";if(p.status==="confirmed"){n2++;if(!p.origConfirmed)p.promoted=true;}});
-    list.filter(p=>!fixed(p)&&!p.checkedIn).forEach(p=>{if(p.origConfirmed&&!p.checkedOutAt){p.status="noshow";p.noShow=true;}else if(p.status!=="removed")p.status="reserve";});
-    list.openSlots=Math.max(0,max-n2);
-  }
+  const played=new Set(S.matches.filter(m=>m.status!=="cancelled").flatMap(m=>matchEveryone(m)));
+  const fixed=p=>p.override||p.checkedInAt||played.has(p.id);
+  [1,2].forEach(r=>{
+    const dlr=r===1?dl:dl2,cap=r===1?max:(R?R.max:0);
+    if(!dlr||asOf<=dlr)return;
+    let n2=list.filter(p=>p.status==="confirmed"&&p.round===r&&fixed(p)).length;
+    list.filter(p=>!fixed(p)&&p.checkedIn&&((p.status==="confirmed"&&p.round===r)||(p.status==="reserve"&&p.want===r)||(r===1&&p.status==="confirmed"&&p.round===2&&p.early)))
+      .sort((a,b)=>((a.origConfirmed&&a.round===r&&a.ciAt<=dlr)?0:1)-((b.origConfirmed&&b.round===r&&b.ciAt<=dlr)?0:1)||a.ciAt-b.ciAt)
+      .forEach(p=>{
+        if(n2<cap){n2++;if(p.status!=="confirmed"||p.round!==r){p.upgraded=p.round===2;p.status="confirmed";p.round=r;p.want=0;p.promoted=true;}}
+        else if(p.round===r&&p.status==="confirmed"){p.status="reserve";p.want=r;p.round=0;}});
+    list.filter(p=>!fixed(p)&&!p.checkedIn&&p.status==="confirmed"&&p.round===r).forEach(p=>{if(!p.checkedOutAt){p.status="noshow";p.noShow=true;}else{p.status="reserve";p.want=r;p.round=0;}});
+    if(r===1)list.openSlots=Math.max(0,cap-n2);else list.openSlots2=Math.max(0,cap-n2);
+  });
+  /* round 2 players are not drawn into games before round 2 starts (they may still check in early) */
+  const t2=R?sessRoundStart(s,2):0;
+  list.forEach(p=>{p.notYet=!!(R&&p.status==="confirmed"&&p.round===2&&t2&&asOf<t2&&s.status!=="closed");});
+  /* numbers shown to players: place within the round (confirmed) or in the waiting line (reserve) */
+  [1,2].forEach(r=>{let i=0;list.filter(p=>p.status==="confirmed"&&p.round===r).forEach(p=>p.no=++i);i=0;list.filter(p=>p.status==="reserve"&&p.want===r).forEach(p=>p.rsvNo=++i);});
+  list.rsvTotal={1:list.filter(p=>p.status==="reserve"&&p.want!==2).length,2:list.filter(p=>p.status==="reserve"&&p.want===2).length};
   return list;
 }
 /* check-in deadline = session start + noShowMin (0 turns the rule off) */
-function checkinDeadline(s){const m=+cfg().noShowMin||0;if(!m||!s||!s.date||!s.start)return null;
-  const [y,mo,d]=s.date.split("-").map(Number);const [h,mi]=s.start.split(":").map(Number);return new Date(y,mo-1,d,h,mi).getTime()+m*MIN;}
+function checkinDeadline(s,r){const m=+cfg().noShowMin||0;if(!m||!s||!s.date)return null;const t=sessRoundStart(s,r===2?2:1);return t?t+m*MIN:null;}
+/* start time of round 1 (the session start) or round 2 (round2Start) as an epoch; 0 when not set */
+function sessRoundStart(s,r){const hhmm=r===2?s&&s.round2Start:s&&s.start;if(!s||!s.date||!hhmm||!/^\d{1,2}:\d{2}$/.test(hhmm))return 0;
+  const [y,mo,d]=s.date.split("-").map(Number);const [h,mi]=hhmm.split(":").map(Number);let t=new Date(y,mo-1,d,h,mi).getTime();
+  if(r===2&&s.start&&/^\d{1,2}:\d{2}$/.test(s.start)){const [h1,m1]=s.start.split(":").map(Number);if(t<new Date(y,mo-1,d,h1,m1).getTime())t+=864e5;}   // round 2 after midnight
+  return t;}
+/* a session can have a second round: people who could not get a place at the start sign up for round 2 (e.g. 21:00) and join the draw from then on */
+function roundsOf(s){const t=s&&s.round2Start;if(!t||!/^\d{1,2}:\d{2}$/.test(t))return null;const m=Math.floor(+s.round2Max);return {start:t,max:m>0?m:999};}
+/* Who gets a place. items are in sign-up order: {id, chosen:1|2, early:bool (chose round 2 but wants round 1 if a place opens), fix:""|"confirmed"|"reserve"|"removed" (organizer decisions / checked in at the venue)}
+   1) everybody who wants round 1 (chose round 1, or chose round 2 + wants early) fills the round-1 places in sign-up order
+   2) the rest who chose round 2 fill the round-2 places in sign-up order; everybody else waits (reserve), in sign-up order.
+   A round-1 cancellation therefore moves the first "wants round 1" person up, and frees their round-2 place for the next one. */
+function seatPlan(items,s){
+  const R=roundsOf(s),max=+s.maxPlayers>0?+s.maxPlayers:999,out={};let n1=0,n2=0;
+  items.forEach(p=>{
+    if(p.fix==="removed"){out[p.id]={status:"removed"};return;}
+    const ch=R&&p.chosen===2?2:1;
+    if(p.fix==="reserve"){out[p.id]={status:"reserve",want:ch};return;}
+    if(p.fix==="confirmed"){out[p.id]={status:"confirmed",round:ch};if(ch===2)n2++;else n1++;return;}
+    if(ch===1||p.early){if(n1<max){out[p.id]={status:"confirmed",round:1,up:ch===2};n1++;return;}}
+    out[p.id]=null;});
+  items.forEach(p=>{if(out[p.id]!==null)return;
+    if(R&&p.chosen===2){if(n2<R.max){out[p.id]={status:"confirmed",round:2};n2++;}else out[p.id]={status:"reserve",want:2};}
+    else out[p.id]={status:"reserve",want:1};});
+  [1,2].forEach(r=>{let i=0;items.forEach(p=>{if(out[p.id].status==="confirmed"&&out[p.id].round===r)out[p.id].no=++i;});i=0;items.forEach(p=>{if(out[p.id].status==="reserve"&&out[p.id].want===r)out[p.id].rsvNo=++i;});});
+  return out;}
 function playerStats(){
   const r=cfg().restMin*MIN,st={};
   const g=id=>st[id]||(st[id]={games:0,wins:0,losses:0,draws:0,helps:0,minutes:0,lastEnd:0,restUntil:0,inMatch:null,partners:[]});
@@ -240,13 +290,14 @@ function statusOf(p,ps,t){
   if(p.status==="noshow")return {k:"bad",t:"ไม่มาตามนัด"};
   if(p.status==="reserve")return {k:"off",t:"สำรอง"};
   if(!p.checkedIn)return {k:"off",t:p.checkedOutAt?"กลับแล้ว":"ยังไม่เช็คอิน"};
+  if(p.notYet)return {k:"off",t:"รอรอบ "+((curSession()||{}).round2Start||"")};
   if(x.inMatch&&x.inMatch.status==="playing")return {k:"play",t:"กำลังเล่น"};
   if(x.inMatch&&x.inMatch.status==="queued")return {k:"queued",t:"รอลงคอร์ด"};
   if(x.restUntil>t)return {k:"rest",t:"พัก "+mmss(x.restUntil-t),until:x.restUntil};
   return {k:"ready",t:"พร้อม"};
 }
 function waitingOrder(roster,ps){
-  return roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!ps.get(p.id).inMatch)
+  return roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.notYet&&!ps.get(p.id).inMatch)
     .sort((a,b)=>{const A=ps.get(a.id),B=ps.get(b.id);
       if(A.games!==B.games)return A.games-B.games;
       const ta=A.lastEnd||a.checkedInAt||a.selfCheckIn||0,tb=B.lastEnd||b.checkedInAt||b.selfCheckIn||0;return ta-tb;});
@@ -358,15 +409,16 @@ const nameOf=id=>{const p=rosterModel().find(x=>x.id===id);return p?p.name:(self
 function pChip(id,ps,roster,t){const p=roster.find(x=>x.id===id)||{id,name:nameOf(id),skill:"L2",status:"confirmed",checkedIn:true};const st=statusOf(p,ps,t);return `<div class="pn">${skillChip(p.skill)}<span class="nm">${esc(p.name)}</span>${st.k==="rest"?`<span class="chip s-rest" data-until="${st.until}">${esc(st.t)}</span>`:""}</div>`;}
 
 function matchMini(m,ps,roster,t){const n=id=>{const p=roster.find(x=>x.id===id);return `${p?skillChip(p.skill):""}<span>${esc(nameOf(id))}</span>`;};
-  return `<div class="mini"><span style="color:var(--a-team)">${m.a.map(n).join(" ")}</span><span class="t">vs</span><span style="color:var(--b-team)">${m.b.map(n).join(" ")}</span></div>`;}
+  return `<div class="mini"><span style="color:var(--a-team)">${m.a.map(n).join(" ")}</span><span class="t">vs</span><span style="color:var(--b-team)">${m.b.map(n).join(" ")}</span>${m.free?'<span class="chip s-ready">เกมฟรี · ลูกซ่อม</span>':""}</div>`;}
 
 function selfService(){return DB.mode==="gh"||(DB.mode==="db"&&(DB.isOrg||!DB.viewOnly))||(DB.mode==="local"&&!DB.isOrg);}
 function myId(){return selfService()?DB.uid:(myIdentity||null);}
 function sessionCard(s){
-  const roster=rosterModel();const conf=roster.filter(p=>p.status==="confirmed").length;
+  const roster=rosterModel();const conf=roster.filter(p=>p.status==="confirmed").length;const R=roundsOf(s),c1=roster.filter(p=>p.status==="confirmed"&&p.round===1).length,c2=roster.filter(p=>p.status==="confirmed"&&p.round===2).length;
   return `<div style="display:grid;gap:6px"><div class="pn"><h3>${esc(s.title||"รอบเล่น")}</h3>${s.status==="closed"?'<span class="chip s-off">ปิดแล้ว</span>':'<span class="chip s-ready">เปิดรับ</span>'}</div>
     <div class="small">${esc(fmtD(s.date))} · ${esc(s.start||"")}–${esc(s.end||"")} · ${(s.courts||[]).length} คอร์ด (${(s.courts||[]).map(esc).join(", ")}) · รับ ${s.maxPlayers||"-"} คน · ลงชื่อแล้ว ${conf} คน${roster.filter(p=>p.status==="reserve").length?` + สำรอง ${roster.filter(p=>p.status==="reserve").length}`:""}</div>
-    <div class="bar"><span style="width:${Math.min(100,conf/Math.max(1,s.maxPlayers||1)*100)}%"></span></div>
+    ${R?`<div class="small">รอบ 2 เริ่ม ${esc(R.start)} · รับเพิ่ม ${R.max<999?R.max:"-"} คน · ลงชื่อรอบ 1 แล้ว ${c1} · รอบ 2 แล้ว ${c2}</div>`:""}
+    <div class="bar"><span style="width:${Math.min(100,(R?c1:conf)/Math.max(1,s.maxPlayers||1)*100)}%"></span></div>
     ${s.desc?`<p class="small" style="margin:0;white-space:pre-wrap">${esc(s.desc)}</p>`:""}
     <div class="small muted">ค่าสนาม ${baht(cfg().playerCourtFee)} ฿/คน + ค่าลูก ${unit(cfg().shuttleFee)} ฿/ลูก${cfg().shuttleSplit==="shared"?" (หาร 4 คนในเกม)":" ต่อคน"} · ลูกซ่อมไม่คิดเงิน</div></div>`;
 }
@@ -397,7 +449,7 @@ const PRICE_KEYS=["playerCourtFee","shuttleFee","shuttleSplit","shuttleCost","re
 const priceCfg=s=>({...cfg(),...((s&&s.priceSnap)||{})});
 const priceSnapNow=()=>{const c=cfg(),o={};PRICE_KEYS.forEach(k=>{if(c[k]!==undefined)o[k]=c[k];});return o;};
 /* unit prices may have decimals (฿37.50 per shuttle) — show them without rounding to whole baht */
-const unit=n=>{n=+n||0;return Number.isInteger(n)?n.toLocaleString("th-TH"):n.toLocaleString("th-TH",{minimumFractionDigits:2,maximumFractionDigits:2});};
+const unit=n=>{n=+n||0;return Number.isInteger(n)?n.toLocaleString(LOC()):n.toLocaleString(LOC(),{minimumFractionDigits:2,maximumFractionDigits:2});};
 function courtHoursOf(s,name){
   const total=sessHours(s)*60,cm=s.courtMeta&&s.courtMeta[name];if(!cm||!cm.from)return total/60;
   let off=toMin(cm.from)-toMin(s.start);if(off<-180)off+=1440;           // after midnight → next day; up to 3 h before the start counts as full time
@@ -415,6 +467,7 @@ function payModel(){
   const done=S.matches.filter(m=>m.status==="done");
   const shuttles=done.reduce((a,m)=>a+(+m.shuttles||0),0);
   const repair=done.reduce((a,m)=>a+(+m.repair||0),0);
+  const freeGames=done.filter(m=>m.free).length;
   const part=roster.filter(p=>(p.status==="confirmed"&&(p.checkedIn||p.checkedOutAt))||ps.get(p.id).games>0);
   // anyone who appears in a finished game pays, even if they later cancelled or were removed
   const inPart=new Set(part.map(p=>p.id));
@@ -425,10 +478,12 @@ function payModel(){
   const slipMap={};S.slips.forEach(x=>{const b=x.bySid&&x.bySid[s.id];if(b)slipMap[x.id]=b;});
   const perShuttle=c.shuttleSplit==="shared"?(+c.shuttleFee||0)/4:(+c.shuttleFee||0);
   const rows=part.map(p=>{
-    const myShuttles=done.filter(m=>matchStarters(m).includes(p.id)).reduce((a,m)=>a+(+m.shuttles||0),0);   // the four who started a game pay its shuttles, even if injured and swapped out; substitutes only helped
+    const myShuttles=done.filter(m=>!m.free&&matchStarters(m).includes(p.id)).reduce((a,m)=>a+(+m.shuttles||0),0);   // the four who started a game pay its shuttles, even if injured and swapped out; substitutes only helped. A free game (repaired shuttle as a favour) is never billed.
+    const myFree=done.filter(m=>m.free&&matchStarters(m).includes(p.id)).length;
+    const freeOnly=!p.noShowRow&&myFree>0&&!S.matches.some(m=>m.status!=="cancelled"&&!m.free&&matchStarters(m).includes(p.id));   // came for the free game(s) only: nothing to pay
     const helped=done.filter(m=>matchHelpers(m).includes(p.id)).length,leftEarly=done.filter(m=>m.orig&&matchStarters(m).includes(p.id)&&!matchOnCourt(m).includes(p.id)).length;
     const noShowPart=p.noShowRow?fee:0;
-    const courtPart=p.noShowRow?0:Math.ceil(+c.playerCourtFee||0),shuttlePart=Math.ceil(myShuttles*perShuttle);   // round per part so totals add up exactly
+    const courtPart=p.noShowRow||freeOnly?0:Math.ceil(+c.playerCourtFee||0),shuttlePart=Math.ceil(myShuttles*perShuttle);   // round per part so totals add up exactly
     let due=courtPart+shuttlePart+noShowPart;
     const calc=due,ov=payMap[p.id]||{};
     if(ov.dueAdj!=null)due=calc+(+ov.dueAdj||0);           // "ปรับยอด" is stored as a difference, so games played later are still billed
@@ -442,21 +497,27 @@ function payModel(){
     else if(paidAmt>0)state=paidAmt>=due?"paid":(slip&&slip.at>(ov.at||0)?"pending":"partial");
     else if(ov.status==="rejected")state=slip&&slip.at>(ov.at||0)?"pending":"rejected";
     else if(slip)state="pending";
-    return {id:p.id,name:p.name,games:ps.get(p.id).games,myShuttles,helped,leftEarly,courtPart,shuttlePart,noShowPart,due,calc:Math.ceil(calc),adjusted,state,ov,slip,paidAmt,owe:Math.max(0,due-paidAmt),adjReason:nt.adjReason||ov.adjReason||"",rejectNote:nt.rejectNote||ov.note||""};
+    if(freeOnly&&due<=0)state="paid";
+    /* how the money came in: the receipts the organizer recorded (cash / transfer); an older bill without receipts counts as cash, or transfer if a slip was confirmed */
+    const recs=Array.isArray(ov.rec)?ov.rec:[];let cashAmt=0,transAmt=0;recs.forEach(x=>{if(x.m==="transfer")transAmt+=+x.a||0;else cashAmt+=+x.a||0;});
+    const legacy=Math.max(0,Math.min(paidAmt,due)-cashAmt-transAmt);if(legacy>0){if(ov.status==="verified")transAmt+=legacy;else cashAmt+=legacy;}
+    return {id:p.id,name:p.name,games:ps.get(p.id).games,myShuttles,myFree,freeOnly,helped,leftEarly,courtPart,shuttlePart,noShowPart,due,calc:Math.ceil(calc),adjusted,state,ov,slip,paidAmt,recs,cashAmt,transAmt,owe:Math.max(0,due-paidAmt),adjReason:nt.adjReason||ov.adjReason||"",rejectNote:nt.rejectNote||ov.note||""};
   });
   const revCourt=rows.reduce((a,r)=>a+r.courtPart,0),revShuttle=rows.reduce((a,r)=>a+r.shuttlePart,0);
   const revenue=rows.reduce((a,r)=>a+r.due,0);
-  const collected=rows.reduce((a,r)=>a+Math.min(r.paidAmt,r.due),0);
+  const collected=rows.reduce((a,r)=>a+Math.min(r.paidAmt,r.due),0),collectedCash=rows.reduce((a,r)=>a+r.cashAmt,0),collectedTransfer=rows.reduce((a,r)=>a+r.transAmt,0);
   const rent=rentTotal(s),costNew=shuttles*(+c.shuttleCost||0),costRepair=repair*(+c.repairCost||0),other=+s.otherFee||0;
   const cost=rent+costNew+costRepair+other;
-  const pnl={revenue,revCourt,revShuttle,revNoShow:rows.reduce((a,r)=>a+r.noShowPart,0),adjust:revenue-revCourt-revShuttle-rows.reduce((a,r)=>a+r.noShowPart,0),collected,rent,costNew,costRepair,other,cost,
+  const pnl={revenue,revCourt,revShuttle,revNoShow:rows.reduce((a,r)=>a+r.noShowPart,0),adjust:revenue-revCourt-revShuttle-rows.reduce((a,r)=>a+r.noShowPart,0),collected,collectedCash,collectedTransfer,rent,costNew,costRepair,other,cost,
     profit:revenue-cost,cashProfit:collected-cost,hours:sessHours(s),courts:(s.courts||[]).length,courtHours:courtHours(s),addedCourts:(s.courts||[]).filter(n=>s.courtMeta&&s.courtMeta[n]&&s.courtMeta[n].from).length,
     rentRate:s.courtRent!=null?+s.courtRent:(s.courtFee?null:+c.courtRent||0),
     breakEven:(+c.playerCourtFee||0)>0?Math.ceil(Math.max(0,rent+other)/(+c.playerCourtFee)):null};
-  return {rows,total:revenue,shuttles,repair,part:part.length,games,pnl};
+  return {rows,total:revenue,shuttles,repair,freeGames,part:part.length,games,pnl};
 }
 let mySlipDoc=null;const selfSlip=()=>mySlipDoc;
-function payChip(r){const m={paid:["s-ready",r.ov.status==="cash"?"จ่ายเงินสดแล้ว":"ยืนยันแล้ว"],pending:["s-warn","รอตรวจสลิป"],partial:["s-warn",`ค้างเพิ่ม ${baht(r.owe)} ฿`],rejected:["s-bad","สลิปไม่ผ่าน"],unpaid:["s-off","ยังไม่จ่าย"]}[r.state];return `<span class="chip ${m[0]}">${m[1]}</span>`;}
+function payChip(r){const paidTxt=r.freeOnly&&!r.due?"เล่นฟรี":r.cashAmt>0&&r.transAmt>0?"รับครบ (สด+โอน)":r.transAmt>0&&(r.recs.length||r.ov.status!=="verified")?"รับโอนแล้ว":r.recs.length||r.ov.status==="cash"?"จ่ายเงินสดแล้ว":"ยืนยันแล้ว";
+  if(r.freeOnly&&!r.due)return `<span class="chip s-ready">เล่นฟรี</span>`;
+  const m={paid:["s-ready",paidTxt],pending:["s-warn","รอตรวจสลิป"],partial:["s-warn",`ค้างเพิ่ม ${baht(r.owe)} ฿`],rejected:["s-bad","สลิปไม่ผ่าน"],unpaid:["s-off","ยังไม่จ่าย"]}[r.state];return `<span class="chip ${m[0]}">${m[1]}</span>`;}
 /* ---------- board ---------- */
 function vBoard(){
   const hidden=(S.mod&&S.mod.hidden)||{};
@@ -469,7 +530,7 @@ function vBoard(){
   let h=`<section class="panel"><div class="ph"><h2>ประกาศรับสมัคร</h2></div>${ann.length?`<div class="feed">${ann.map(s=>`<article class="post pin"><div class="post-h"><b>📌 ${esc(s.title||"รอบเล่น")}</b><span>${esc(fmtD(s.date))} ${esc(s.start||"")}–${esc(s.end||"")}</span></div>${sessionCard(s)}${!DB.isOrg&&selfService()?`<div><button class="primary sm" data-act="signupFor" data-id="${esc(s.id)}">ลงชื่อ</button></div>`:""}</article>`).join("")}</div>`:`<div class="empty">ไม่มีประกาศที่เปิดรับ</div>`}</section>
   <section class="panel"><div class="ph"><h2>บอร์ดชุมชน</h2><span class="sp"></span>${canPost?`<button class="primary" data-act="newPost">+ โพสต์</button>`:""}</div>
   ${visible.length?`<div class="feed">${visible.map(p=>{const cs=comments.filter(c=>c.post===p.key).sort((a,b)=>a.at-b.at);
-    return `<article class="post"><div class="post-h"><b>${esc(((selfDoc(p.owner)||{}).name)||p.author||nameOf(p.owner))}</b><span>${new Date(p.at).toLocaleString("th-TH",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>${hidden[p.key]?'<span class="chip s-bad">ซ่อนจากผู้เล่น</span>':""}<span style="flex:1"></span>
+    return `<article class="post"><div class="post-h"><b>${esc(((selfDoc(p.owner)||{}).name)||p.author||nameOf(p.owner))}</b><span>${new Date(p.at).toLocaleString(LOC(),{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>${hidden[p.key]?'<span class="chip s-bad">ซ่อนจากผู้เล่น</span>':""}<span style="flex:1"></span>
       ${DB.isOrg?`<button class="ghost sm" data-act="hidePost" data-id="${esc(p.key)}">${hidden[p.key]?"เลิกซ่อน":"ซ่อน"}</button>`:""}${p.owner===DB.uid?`<button class="ghost sm" data-act="delPost" data-id="${esc(p.id)}">ลบ</button>`:""}</div>
       ${p.text?`<p>${esc(p.text)}</p>`:""}${p.img?`<img src="${esc(p.img)}" alt="รูปประกอบโพสต์">`:""}
       ${cs.length?`<div class="cmts">${cs.map(c=>`<div><b>${esc(((selfDoc(c.owner)||{}).name)||c.author||nameOf(c.owner))}</b> ${esc(c.text)}</div>`).join("")}</div>`:""}
@@ -610,6 +671,7 @@ function selectSession(id,force){
 }
 function startGlobal(){
   watchDoc("cfg/main",d=>{S.cfg=d;render();});
+  watchDoc("cfg/pay",d=>{S.payqr=d;render();});
   watchDoc("inventory/main",d=>{S.inv=d;render();});
   watchDoc("board/mod",d=>{S.mod=d;render();});
   watchCol("self",d=>{const prev=S.selfDocs;S.selfDocs=d;render();orgHook("self",prev);});
@@ -623,7 +685,10 @@ function startGlobal(){
     if(!first&&APP.name==="player"){const nw=d.filter(x=>!prevIds.has(x.id)&&x.status!=="closed");if(nw.length)toast(`มีประกาศใหม่: ${nw[0].title||"รอบเล่น"} — เปิดแท็บ "ประกาศ" เพื่อลงชื่อ`);}
     S.sessions=d;
     if(!S.sid||!d.some(s=>s.id===S.sid)){let saved=null;try{saved=localStorage.getItem("bgo-sid");}catch(e){}
-      const pick=d.find(s=>s.id===saved)||d.slice().sort((a,b)=>Math.abs(dateDiff(a.date))-Math.abs(dateDiff(b.date)))[0];selectSession(pick?pick.id:null);}
+      let pick=d.find(s=>s.id===saved)||d.slice().sort((a,b)=>Math.abs(dateDiff(a.date))-Math.abs(dateDiff(b.date)))[0];
+      /* a player who comes back after a closed round lands on the newest open round (the unpaid reminder and the old bills are one tap away there) */
+      if(APP.name==="player"&&pick&&pick.status==="closed"){const nx=d.filter(x=>x.status!=="closed"&&(x.date||"")>=(pick.date||"")).sort((a,b)=>(a.date||"").localeCompare(b.date||""))[0];if(nx)pick=nx;}
+      selectSession(pick?pick.id:null);}
     render();});
 }
 const dateDiff=iso=>{if(!iso)return 1e9;const [y,m,d]=iso.split("-").map(Number);return (new Date(y,m-1,d)-new Date(new Date().toDateString()))/864e5;};
@@ -631,7 +696,7 @@ const dateDiff=iso=>{if(!iso)return 1e9;const [y,m,d]=iso.split("-").map(Number)
 /* ================= clock / countdowns ================= */
 function tick(){
   const t=now();
-  const ct=new Date(t).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit",second:"2-digit"});document.querySelectorAll(".clockTxt").forEach(el=>el.textContent=ct);
+  const ct=new Date(t).toLocaleTimeString(LOC(),{hour:"2-digit",minute:"2-digit",second:"2-digit"});document.querySelectorAll(".clockTxt").forEach(el=>el.textContent=ct);
   document.querySelectorAll("[data-since]").forEach(el=>el.textContent=mmss(t-+el.dataset.since));
   let expired=false;
   document.querySelectorAll("[data-until]").forEach(el=>{const u=+el.dataset.until;if(u<=t)expired=true;else el.textContent="พัก "+mmss(u-t);});
