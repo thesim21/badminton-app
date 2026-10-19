@@ -251,11 +251,16 @@ function vPlayers(){
   const groups={confirmed:roster.filter(p=>p.status==="confirmed"),reserve:roster.filter(p=>p.status==="reserve"),noshow:roster.filter(p=>p.status==="noshow"),removed:roster.filter(p=>p.status==="removed")};
   const dl=roster.deadline;
   if(dl&&s.status!=="closed")h+=t<dl
-    ?`<div class="notice">เช็คอินภายใน <b>${hm(dl)}</b> (อีก <span data-until="${dl}">${mmss(dl-t)}</span>) — หลังจากนั้นตัวจริงที่ยังไม่มาจะเสียสิทธิ์ให้ตัวสำรองที่มาถึงแล้ว · ยังไม่เช็คอิน ${groups.confirmed.filter(p=>!p.checkedIn).length} คน</div>`
+    ?`<div class="notice">เช็คอินภายใน <b>${hm(dl)}</b> (อีก <span data-until="${dl}" data-pre="">${mmss(dl-t)}</span>) — หลังจากนั้นตัวจริงที่ยังไม่มาจะเสียสิทธิ์ให้ตัวสำรองที่มาถึงแล้ว · ยังไม่เช็คอิน ${groups.confirmed.filter(p=>!p.checkedIn).length} คน</div>`
     :(groups.noshow.length?`<div class="notice warn">เลยเวลาเช็คอิน ${hm(dl)} แล้ว — ไม่มาตามนัด ${groups.noshow.length} คน${roster.filter(p=>p.promoted).length?` · เลื่อนตัวสำรองที่มาแล้วขึ้นแทน ${roster.filter(p=>p.promoted).length} คน`:""}${roster.openSlots?` · ยังว่าง ${roster.openSlots} ที่`:""}${cfg().noShowFee?` · คิดค่าปรับคนละ ${baht(cfg().noShowFee)} ฿`:""}</div>`:"");
   const R=roster.rounds,dl2=roster.deadline2;
   if(R&&s.status!=="closed"){const n1=groups.confirmed.filter(p=>p.round===1).length,n2=groups.confirmed.filter(p=>p.round===2).length;
-    h+=`<div class="notice">รอบ ${esc(s.start||"")}: ${n1}/${s.maxPlayers||"-"} คน · รอบ ${esc(R.start)}: ${n2}/${R.max<999?R.max:"-"} คน · สำรองรอรอบ ${esc(s.start||"")} ${roster.rsvTotal[1]} · สำรองรอรอบ ${esc(R.start)} ${roster.rsvTotal[2]}${dl2&&t<dl2?` · เช็คอินรอบ ${esc(R.start)} ได้ถึง <b>${hm(dl2)}</b>`:""}${roster.some(p=>p.notYet&&p.checkedIn)?` · เช็คอินรอรอบ ${esc(R.start)} แล้ว ${roster.filter(p=>p.notYet&&p.checkedIn).length} คน (ยังไม่ถูกจัดลงคอร์ด)`:""}</div>`;}
+    h+=`<div class="notice">รอบ ${esc(s.start||"")}: ${n1}/${s.maxPlayers||"-"} คน · รอบ ${esc(R.start)}: ${n2}/${R.max<999?R.max:"-"} คน · สำรองรอรอบ ${esc(s.start||"")} ${roster.rsvTotal[1]} · สำรองรอรอบ ${esc(R.start)} ${roster.rsvTotal[2]}${dl2&&t<dl2?` · เช็คอินรอบ ${esc(R.start)} ได้ถึง <b>${hm(dl2)}</b>`:""}${roster.some(p=>p.notYet&&p.checkedIn)?` · เช็คอินรอรอบ ${esc(R.start)} แล้ว ${roster.filter(p=>p.notYet&&p.checkedIn).length} คน (ยังไม่ถูกจัดลงคอร์ด)`:""}</div>`;
+    /* say WHY round-2 players are not in the draw yet: this device thinks round 2 has not started (wrong round date, or the device clock is behind) */
+    const t2=sessRoundStart(s,2),wait2=t2-t;
+    if(wait2>0&&roster.some(p=>p.notYet))h+=wait2>12*3600e3
+      ?`<div class="notice warn">ผู้เล่นรอบ ${esc(R.start)} ยังไม่เข้าคิว เพราะวันที่ของรอบนี้คือ <b>${esc(fmtD(s.date))}</b> แต่นาฬิกาเครื่องนี้ตอนนี้คือ ${esc(hm(t))} — ยังไม่ถึงรอบ ${esc(R.start)} ของวันนั้น · ถ้าเล่นวันนี้ให้กด "แก้ไขรอบนี้" แล้วแก้วันที่</div>`
+      :`<div class="notice">ผู้เล่นรอบ ${esc(R.start)} จะเข้าคิวอีก <b><span data-until="${t2}" data-pre="">${mmss(wait2)}</span></b> · นาฬิกาเครื่องนี้ ${esc(hm(t))} (ถ้าไม่ตรงกับนาฬิกาจริง ให้ตั้งเวลาเครื่องเป็นอัตโนมัติ)</div>`;}
   const list=groups[rosterTab]||[];
   h+=`<section class="panel"><div class="ph"><h2>รายชื่อผู้เล่น</h2>
     <div class="seg" role="group">${[["confirmed","ตัวจริง"],["reserve","สำรอง"],...(groups.noshow.length?[["noshow","ไม่มา"]]:[]),["removed","นำออก"]].map(([k,tx])=>`<button data-act="rosterTab" data-k="${k}" aria-pressed="${rosterTab===k}">${tx} ${groups[k].length}</button>`).join("")}</div>

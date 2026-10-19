@@ -694,15 +694,22 @@ function startGlobal(){
 const dateDiff=iso=>{if(!iso)return 1e9;const [y,m,d]=iso.split("-").map(Number);return (new Date(y,m-1,d)-new Date(new Date().toDateString()))/864e5;};
 
 /* ================= clock / countdowns ================= */
+let r2Fired=null;   // which round-2 start has already triggered its repaint
 function tick(){
   const t=now();
   const ct=new Date(t).toLocaleTimeString(LOC(),{hour:"2-digit",minute:"2-digit",second:"2-digit"});document.querySelectorAll(".clockTxt").forEach(el=>el.textContent=ct);
   document.querySelectorAll("[data-since]").forEach(el=>el.textContent=mmss(t-+el.dataset.since));
   let expired=false;
-  document.querySelectorAll("[data-until]").forEach(el=>{const u=+el.dataset.until;if(u<=t)expired=true;else el.textContent="พัก "+mmss(u-t);});
+  document.querySelectorAll("[data-until]").forEach(el=>{const u=+el.dataset.until;if(u<=t)expired=true;else el.textContent=(el.dataset.pre!=null?el.dataset.pre:"พัก ")+mmss(u-t);});   // data-pre="" = a plain countdown (rest timers get the "พัก " prefix)
   if(expired)render();
+  /* the moment round 2 starts, its players join the draw: repaint right then, not up to 30 s later */
+  {const s=curSession(),t2=s&&s.status!=="closed"?sessRoundStart(s,2):0;if(t2&&t>=t2&&r2Fired!==s.id+"|"+t2){r2Fired=s.id+"|"+t2;render();}}
 }
 setInterval(tick,1000);
+/* coming back to the app (unlocked phone, switched tab, network back): repaint at once so nobody reads a stale screen */
+document.addEventListener("visibilitychange",()=>{if(!document.hidden){tick();render();}});
+window.addEventListener("pageshow",()=>{tick();render();});
+window.addEventListener("online",()=>render());
 setInterval(()=>render(),30000);   // refresh ETAs and the no-show deadline
 /* ================= boot ================= */
 function hashStr(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return s.length+":"+h;}
