@@ -33,6 +33,57 @@ function myPlaceText(s,row){
   return "";
 }
 
+/* every place of every round is taken: a new player cannot sign up, but can leave a message for the organizer
+   (with one round only, signing up as a reserve stays possible, and the message is offered next to it) */
+const isFull=cnt=>cnt.left1<=0&&(!cnt.R||cnt.left2<=0);
+const myJoinReqs=()=>joinReqModel().filter(r=>r.uid===DB.uid);
+const myPendingJR=sid=>myJoinReqs().find(r=>r.sid===sid&&r.status==="pending");
+/* the organizer put me in the line (joinreq says queued): write my own sign-up for that round so every screen counts me like anybody else */
+const qSyncing=new Set();
+async function pQueuedSync(){
+  if(!canSelf()||!DB.uid)return;
+  const me=selfDoc(DB.uid);if(!me||!me.name)return;
+  const todo=myJoinReqs().filter(r=>r.status==="queued"&&r.toSid&&!(me.signups&&me.signups[r.toSid])&&!qSyncing.has(r.id)&&S.sessions.some(x=>x.id===r.toSid&&x.status!=="closed"));
+  if(!todo.length)return;
+  todo.forEach(r=>qSyncing.add(r.id));
+  const su={...(me.signups||{})};todo.forEach(r=>{su[r.toSid]={at:r.decidedAt||now(),viaReq:r.id,...(r.toRound===2?{round:2,wantEarly:false}:{})};});
+  const ok=await write(`self/${DB.uid}`,{...stripId(me),signups:su});
+  if(!ok)setTimeout(()=>todo.forEach(r=>qSyncing.delete(r.id)),30000);
+}
+/* "messages to the organizer": waiting, accepted into the line, or turned down with the organizer's reason */
+function pJoinReqs(){
+  const t=now(),mine=myJoinReqs().filter(r=>!r.ack&&(r.status==="pending"||t-(r.decidedAt||r.at)<14*864e5)).slice().reverse().slice(0,5);
+  if(!mine.length)return "";
+  return `<section class="panel jrp"><div class="ph"><h2>ข้อความถึงผู้จัด</h2></div><div class="jrl">${mine.map(r=>{
+    const where=`${r.sTitle||"รอบเล่น"}${r.sDate?" · "+fmtD(r.sDate):""}`,want=`${r.when==="next"?"ขอจองรอบหน้า":"ขอรอบนี้"}${r.roundLabel?" · "+r.roundLabel:""}`;
+    const chip=r.status==="queued"?'<span class="chip s-ready">ผู้จัดรับเข้าคิวแล้ว</span>':r.status==="removed"?'<span class="chip s-bad">ผู้จัดรับไม่ได้</span>':'<span class="chip s-warn">รอผู้จัดพิจารณา</span>';
+    const tos=r.status==="queued"?S.sessions.find(x=>x.id===r.toSid):null;
+    return `<div class="jr jr-${r.status}"><div class="jr-h">${chip}<b>${esc(want)}</b></div><div class="small muted">จากรอบ ${esc(where)}</div>${r.msg?`<p class="jr-m">${esc(r.msg)}</p>`:""}
+      ${r.status==="queued"?`<div class="small">คุณถูกใส่ชื่อในรอบ <b>${esc(tos?(tos.title||"รอบเล่น")+" · "+fmtD(tos.date):"ที่ผู้จัดเปิด")}</b> แล้ว — ดูตำแหน่งที่การ์ดประกาศด้านล่าง</div>`:""}
+      ${r.status==="removed"?`<div class="notice warn jr-why"><b>เหตุผลจากผู้จัด:</b> ${esc(r.reason||"ไม่ได้ระบุ")}</div>`:""}
+      <div class="jr-a">${r.status==="pending"?`<button class="ghost sm" data-pact="jrCancel" data-id="${esc(r.id)}">ยกเลิกข้อความ</button>`:r.status==="removed"?`<button class="ghost sm" data-pact="jrAck" data-id="${esc(r.id)}">รับทราบ</button>`:""}</div></div>`;}).join("")}</div></section>`;
+}
+function dlgJoinReq(sid){
+  const x=S.sessions.find(q=>q.id===sid);if(!x)return;
+  const me=selfDoc(DB.uid);if(!me||!me.name){dlgProfile();toast("ตั้งชื่อก่อนส่งข้อความ");return;}
+  if(myPendingJR(sid)){toast("คุณส่งข้อความของรอบนี้ไปแล้ว — รอผู้จัดพิจารณา");return;}
+  const R=roundsOf(x);
+  const rd=(n,v,t,chk)=>`<label class="rd"><input type="radio" name="${n}" value="${v}"${chk?" checked":""}><span><b>${t}</b></span></label>`;
+  openDlg(`<form novalidate style="display:grid;gap:12px"><h2>ส่งข้อความถึงผู้จัด</h2>
+    <div class="small muted">${esc(x.title||"รอบเล่น")} · ${esc(fmtD(x.date))}</div>
+    <div class="notice small">${R?"รอบแรกและรอบสองเต็มทั้งคู่แล้ว":"รอบนี้เต็มแล้ว"} ลงชื่อไม่ได้ — ฝากข้อความไว้ให้ผู้จัดพิจารณา ถ้ามีที่ว่างหรือเปิดรอบใหม่ ผู้จัดจะเลือกคุณเข้าคิว ถ้ารับไม่ได้ผู้จัดจะบอกเหตุผล</div>
+    <div class="rds">${rd("when","next","ขอจองรอบหน้า",1)}${rd("when","this","ขอรอบนี้ (ถ้ามีคนยกเลิก)",0)}</div>
+    ${R?`<div><div class="small muted" style="margin-bottom:6px">อยากเล่นรอบไหน</div><div class="rds">${rd("rnd","0","ไม่ระบุ",1)}${rd("rnd","1",`รอบ ${esc(x.start||"")}`,0)}${rd("rnd","2",`รอบ ${esc(R.start)}`,0)}</div></div>`:""}
+    <label class="f">ข้อความถึงผู้จัด (ไม่บังคับ)<textarea name="msg" rows="3" maxlength="200" placeholder="เช่น ขอจองรอบหน้าได้ไหมครับ มา 2 คน"></textarea><span class="ferr"></span></label>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ปิด</button><button type="submit" class="primary">ส่งข้อความ</button></div></form>`,async f=>{
+    const m=selfDoc(DB.uid);if(!m)return false;
+    if(myPendingJR(sid)){toast("คุณส่งข้อความของรอบนี้ไปแล้ว");return true;}
+    const when=f.elements.when.value==="this"?"this":"next",rnd=R?(+f.elements.rnd.value||0):0,msg=fv(f,"msg").slice(0,200);
+    const all={...(m.joinReqs||{})};
+    all[uid("jr")]={sid,when,round:rnd,roundLabel:rnd===1?`รอบ ${x.start||""}`:rnd===2?`รอบ ${R.start}`:"",msg,at:now(),sTitle:x.title||"",sDate:x.date||""};
+    const keep=Object.entries(all).sort((a,b)=>(+b[1].at||0)-(+a[1].at||0)).slice(0,20);    // old messages drop out so the document stays small
+    return write(`self/${DB.uid}`,{...stripId(m),joinReqs:Object.fromEntries(keep)},"ส่งข้อความถึงผู้จัดแล้ว — ผู้จัดจะเห็นทันที");});
+}
 /* tell the player the moment something about them changes: their game is set / starts, a request is answered */
 let pPrev=null;
 function pNotify(){
@@ -40,7 +91,7 @@ function pNotify(){
   const m=S.matches.find(x=>(x.status==="queued"||x.status==="playing")&&[...x.a,...x.b].includes(me));
   const reqs=requestModel().filter(r=>r.from===me);
   const rl=rosterModel();const mine=rl.find(x=>x.id===me);
-  const cur={sid:s.id,match:m?`${m.id}:${m.status}`:"",req:Object.fromEntries(reqs.map(r=>[r.id,r.status])),st:mine?mine.status:"",rd:mine&&mine.status==="confirmed"?mine.round:0,slot:!!(mine&&mine.status==="reserve"&&!mine.checkedIn&&rl.openSlots)};
+  const cur={jr:Object.fromEntries(myJoinReqs().map(r=>[r.id,r.status])),sid:s.id,match:m?`${m.id}:${m.status}`:"",req:Object.fromEntries(reqs.map(r=>[r.id,r.status])),st:mine?mine.status:"",rd:mine&&mine.status==="confirmed"?mine.round:0,slot:!!(mine&&mine.status==="reserve"&&!mine.checkedIn&&rl.openSlots)};
   if(pPrev&&pPrev.sid===cur.sid){
     let msg="";
     if(cur.st==="confirmed"&&pPrev.st==="reserve")msg=cur.rd===2?`คุณได้ที่เล่นรอบ ${s.round2Start} แล้ว`:"คุณได้เลื่อนเป็นตัวจริงแล้ว";
@@ -49,12 +100,14 @@ function pNotify(){
     if(cur.slot&&!pPrev.slot)msg="มีที่ว่างแล้ว! มาถึงสนามแล้วกดเช็คอินเพื่อได้สิทธิ์ก่อน";
     if(cur.match&&cur.match!==pPrev.match)msg=m.status==="playing"?`ถึงตาคุณแล้ว! ลงเล่นคอร์ด ${m.court} ได้เลย`:`คุณได้คิวคอร์ด ${m.court} — เตรียมตัวได้เลย`;
     reqs.forEach(r=>{const was=pPrev.req[r.id];if(was==="pending"&&(r.status==="accepted"||r.status==="rejected"))msg=msg||`ผู้จัด${r.status==="accepted"?"อนุมัติ":"ปฏิเสธ"}คำขอ${r.type==="partner"?"คู่":"คู่แข่ง"}กับ ${nameOf(r.to)}`;});
+    myJoinReqs().forEach(r=>{const was=(pPrev.jr||{})[r.id];if(was==="pending"&&r.status==="queued")msg=msg||"ผู้จัดรับคุณเข้าคิวแล้ว!";if(was==="pending"&&r.status==="removed")msg=msg||`ผู้จัดไม่สามารถรับคุณได้${r.reason?" — "+r.reason:""}`;});
     if(msg){toast(msg);try{navigator.vibrate&&navigator.vibrate([180,80,180]);}catch(e){}}
   }
   pPrev=cur;
 }
 function pRender(){
   try{pNotify();}catch(e){}
+  try{pQueuedSync();}catch(e){}
   const c=cfg();
   $("#pgName").textContent=c.group||"Badminton Group Organizer";
   if(DB.mode==="gh")$("#pConn").textContent=GHUI.connText("player");   // sync status changes while the app is open
@@ -96,11 +149,13 @@ function pHome(){
   if(DB.mode==="db"&&DB.viewOnly)h+=`<div class="notice warn">บัญชีของคุณดูข้อมูลได้อย่างเดียว ลงชื่อเองไม่ได้ — แจ้งผู้จัดให้เพิ่มชื่อ แล้วดูคิวของตัวเองที่แท็บ "คิวของฉัน"</div>`;
   if(canSelf()){
     const su=s&&mySignup(s.id);const rp_=s&&S.sid===s.id?rosterModel().find(x=>x.id===DB.uid):null;const inNow=!!(rp_&&rp_.checkedIn)||!!(su&&su.checkedInAt&&!su.checkedOutAt);
-    const steps=[[!!me,"ตั้งชื่อที่ใช้ในก๊วน","editProfile","ตั้งชื่อ"],[!!su,s?`ลงชื่อเล่นรอบ "${s.title||""}"`:"ลงชื่อเล่น (รอผู้จัดประกาศ)",s?"signupFor":"","ลงชื่อ"],[inNow,"เช็คอินเมื่อถึงสนาม แล้วระบบจะจัดคิวให้","selfCheckin","เช็คอิน"]];
+    const blk=!!(s&&!su&&roundsOf(s)&&isFull(signupCount(s)));
+    const steps=[[!!me,"ตั้งชื่อที่ใช้ในก๊วน","editProfile","ตั้งชื่อ"],[!!su,blk?`รอบ "${s.title||""}" เต็มทั้งสองรอบ — ส่งข้อความถึงผู้จัดเพื่อขอจองรอบหน้า`:s?`ลงชื่อเล่นรอบ "${s.title||""}"`:"ลงชื่อเล่น (รอผู้จัดประกาศ)",blk?"joinReq":s?"signupFor":"",blk?"ส่งข้อความ":"ลงชื่อ"],[inNow,"เช็คอินเมื่อถึงสนาม แล้วระบบจะจัดคิวให้","selfCheckin","เช็คอิน"]];
     const next=steps.findIndex(x=>!x[0]);
     if(next>=0)h+=`<section class="panel steps-card"><div class="ph"><h2>เริ่มใช้งาน</h2><span class="muted small">${next}/3 ขั้น</span></div>
       <ol class="ostep">${steps.map((x,i)=>`<li class="${x[0]?"done":i===next?"now":""}"><span>${esc(x[1])}</span>${x[0]?'<span class="chip s-ready">เสร็จ</span>':i===next&&x[2]?`<button class="primary sm" data-pact="${x[2]}" data-id="${s?esc(s.id):""}">${x[3]}</button>`:""}</li>`).join("")}</ol></section>`;
   }
+  if(canSelf())h+=pJoinReqs();
   const open=S.sessions.filter(x=>x.status!=="closed").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
   if(!open.length)return h+pNoSession();
   h+=`<h2 class="sec">ประกาศรับสมัคร</h2>`;
@@ -108,13 +163,15 @@ function pHome(){
     const cnt=signupCount(x);const su=mySignup(x.id);
     const myRow=cnt.list.find(p=>p.id===DB.uid);
     const R=cnt.R,full=cnt.left1<=0;
+    const noRoom=!su&&isFull(cnt),blocked=noRoom&&!!R,pjr=myPendingJR(x.id);     // both rounds are full: no sign-up, only a message to the organizer
+    const gone=x.id===S.sid?rosterModel().find(p=>p.id===DB.uid&&p.status==="removed"):null;     // the organizer took me out of this round
     const resPos=myRow&&myRow.status==="reserve"?(myRow.rsvNo||cnt.list.filter(p=>p.status==="reserve").findIndex(p=>p.id===DB.uid)+1):0;
-    const st=!su?"":myRow&&myRow.status==="noshow"?'<span class="chip s-bad">ไม่มาตามนัด</span>':resPos?`<span class="chip s-warn">สำรองลำดับที่ ${resPos}</span>`:'<span class="chip s-ready">ลงชื่อแล้ว</span>';
+    const st=!su||gone?"":myRow&&myRow.status==="noshow"?'<span class="chip s-bad">ไม่มาตามนัด</span>':resPos?`<span class="chip s-warn">สำรองลำดับที่ ${resPos}</span>`:'<span class="chip s-ready">ลงชื่อแล้ว</span>';
     const place=su&&myRow?myPlaceText(x,myRow):"";
     const rlx=x.id===S.sid?rosterModel():null;const dlx=checkinDeadline(x);
     const ciNow=x.id===S.sid?!!(rosterModel().find(p=>p.id===DB.uid)||{}).checkedIn:!!(su&&su.checkedInAt&&!su.checkedOutAt);
     const early2=myRow&&myRow.status==="confirmed"&&myRow.round===2&&R&&now()<sessRoundStart(x,2);
-    const tip=!su?"":early2?`<div class="notice">คุณลงชื่อ <b>รอบ ${esc(R.start)}</b> — ${ciNow?"เช็คอินแล้ว แต่":"ถึงสนามก่อนได้ เช็คอินไว้ได้เลย แต่"} ระบบจะเริ่มจัดคุณลงคอร์ดตั้งแต่ <b>${esc(R.start)}</b> เท่านั้น</div>`:ciNow?"":myRow&&myRow.status==="noshow"?`<div class="notice warn">เลยเวลาเช็คอิน ${hm(dlx)} — คุณเสียสิทธิ์ตัวจริงแล้ว ถ้ามาถึงแล้วกดเช็คอิน ระบบจะให้ลงเมื่อมีที่ว่าง</div>`
+    const tip=!su||gone?"":early2?`<div class="notice">คุณลงชื่อ <b>รอบ ${esc(R.start)}</b> — ${ciNow?"เช็คอินแล้ว แต่":"ถึงสนามก่อนได้ เช็คอินไว้ได้เลย แต่"} ระบบจะเริ่มจัดคุณลงคอร์ดตั้งแต่ <b>${esc(R.start)}</b> เท่านั้น</div>`:ciNow?"":myRow&&myRow.status==="noshow"?`<div class="notice warn">เลยเวลาเช็คอิน ${hm(dlx)} — คุณเสียสิทธิ์ตัวจริงแล้ว ถ้ามาถึงแล้วกดเช็คอิน ระบบจะให้ลงเมื่อมีที่ว่าง</div>`
       :resPos&&rlx&&rlx.openSlots?`<div class="notice">มีที่ว่าง ${rlx.openSlots} ที่ — มาถึงสนามแล้วกดเช็คอินเพื่อได้สิทธิ์ก่อน</div>`
       :dlx&&now()<dlx&&!resPos?`<div class="small muted">เช็คอินที่สนามภายใน <b>${hm(dlx)}</b> ไม่งั้นเสียสิทธิ์ให้ตัวสำรอง</div>`:"";
     return `<article class="ann${x.id===S.sid?" cur":""}">
@@ -124,8 +181,11 @@ function pHome(){
       ${R?`<div class="ann-c"><div class="bar"><span style="width:${R.max<999?Math.min(100,cnt.c2/Math.max(1,R.max)*100):0}%"></span></div><span class="small num">รอบ ${esc(R.start)} ${cnt.c2}/${R.max<999?R.max:"-"} คน</span></div>`:""}
       ${place?`<div class="myplace"><b>${esc(place)}</b></div>`:""}
       ${tip}
-      <div class="ann-a">${canSelf()?(su?`${!ciNow?`<button class="primary sm" data-pact="selfCheckin" data-id="${esc(x.id)}">เช็คอิน (ถึงสนามแล้ว)</button>`:'<span class="chip s-ready">เช็คอินแล้ว</span>'}${R&&myRow&&myRow.status!=="noshow"&&!(myRow.status==="confirmed"&&ciNow)?`<button class="ghost sm" data-pact="switchRound" data-id="${esc(x.id)}">เปลี่ยนรอบ</button>`:""}<button class="ghost sm" data-pact="cancelFor" data-id="${esc(x.id)}">ยกเลิกการลงชื่อ</button>`
-        :`<button class="primary sm" data-pact="signupFor" data-id="${esc(x.id)}">${full&&!R?"ลงชื่อ (สำรอง)":"ลงชื่อเล่น"}</button>`):""}
+      ${gone?`<div class="notice warn"><b>ผู้จัดนำคุณออกจากรอบนี้</b>${gone.removedReason?`<br>เหตุผล: ${esc(gone.removedReason)}`:""}</div>`:""}
+      ${blocked?`<div class="notice warn">รอบนี้เต็มทั้งรอบ ${esc(x.start||"")} และรอบ ${esc(R.start)} แล้ว — ลงชื่อไม่ได้ แต่ส่งข้อความถึงผู้จัดเพื่อขอจองรอบหน้าได้</div>`:""}
+      <div class="ann-a">${canSelf()?(gone?"":su?`${!ciNow?`<button class="primary sm" data-pact="selfCheckin" data-id="${esc(x.id)}">เช็คอิน (ถึงสนามแล้ว)</button>`:'<span class="chip s-ready">เช็คอินแล้ว</span>'}${R&&myRow&&myRow.status!=="noshow"&&!(myRow.status==="confirmed"&&ciNow)&&!(x.id===S.sid&&S.roster.some(r=>r.id===DB.uid&&(r.round===1||r.round===2)))?`<button class="ghost sm" data-pact="switchRound" data-id="${esc(x.id)}">เปลี่ยนรอบ</button>`:""}<button class="ghost sm" data-pact="cancelFor" data-id="${esc(x.id)}">ยกเลิกการลงชื่อ</button>`
+        :blocked?(pjr?'<span class="chip s-warn">ส่งข้อความแล้ว · รอผู้จัด</span>':`<button class="primary sm" data-pact="joinReq" data-id="${esc(x.id)}">ส่งข้อความถึงผู้จัด</button>`)
+        :`<button class="primary sm" data-pact="signupFor" data-id="${esc(x.id)}">${full&&!R?"ลงชื่อ (สำรอง)":"ลงชื่อเล่น"}</button>${noRoom&&!pjr?`<button class="ghost sm" data-pact="joinReq" data-id="${esc(x.id)}">ส่งข้อความถึงผู้จัด</button>`:""}`):""}
         <button class="ghost sm" data-pact="toggleList" data-id="${esc(x.id)}">${openList.has(x.id)?"ซ่อนรายชื่อ":`ดูรายชื่อ (${cnt.list.length})`}</button>
         ${x.id!==S.sid?`<button class="ghost sm" data-pact="useSess" data-id="${esc(x.id)}">ดูคิวรอบนี้</button>`:""}</div>
       ${openList.has(x.id)?pNames(x,cnt):""}
@@ -157,6 +217,7 @@ function pQueue(){
       ${p.notYet?`<div class="notice">คุณลงชื่อ <b>รอบ ${esc(s.round2Start)}</b> — ${p.checkedIn?"เช็คอินแล้ว":"ถึงสนามก่อนได้"} · ระบบจะเริ่มจัดคุณลงคอร์ดตั้งแต่ <b>${esc(s.round2Start)}</b> (อีก ~${Math.max(1,Math.round((sessRoundStart(s,2)-t)/MIN))} นาที)</div>`:""}
       ${p.upgraded&&p.status==="confirmed"?`<div class="small">คุณได้เลื่อนขึ้นมาเล่นตั้งแต่รอบ ${esc(s.start||"")} แล้ว</div>`:""}
       ${st.k==="rest"?`<div class="small">พักขั้นต่ำ ${cfg().restMin} นาทีหลังจบเกม ระบบจะไม่จับคู่จนกว่าจะพักครบ</div>`:""}
+      ${p.status==="removed"?`<div class="notice warn"><b>ผู้จัดนำคุณออกจากรอบนี้</b>${p.removedReason?`<br>เหตุผล: ${esc(p.removedReason)}`:""}</div>`:""}
       ${p.status==="reserve"?`<div class="small">คุณอยู่ในรายชื่อสำรอง${(p.want===2?rosterModel().openSlots2:rosterModel().openSlots)?` — มีที่ว่าง ${p.want===2?rosterModel().openSlots2:rosterModel().openSlots} ที่ มาถึงแล้วกดเช็คอินเพื่อได้สิทธิ์`:" รอที่ว่างหรือผู้จัดเลื่อนเป็นตัวจริง"}</div>`:""}
       ${p.status==="noshow"?'<div class="small" style="color:var(--shuttle)">เลยเวลาเช็คอิน — เสียสิทธิ์ตัวจริงแล้ว ถ้ามาถึงแล้วกดเช็คอิน จะได้ลงเมื่อมีที่ว่าง</div>':""}
       ${canSelf()&&p.id===DB.uid&&!p.checkedIn&&!p.checkedOutAt&&(p.status==="noshow"||p.status==="reserve")?`<div><button class="primary sm" data-pact="selfCheckin" data-id="${esc(s.id)}">เช็คอิน (ถึงสนามแล้ว)</button></div>`:""}
@@ -235,6 +296,7 @@ function dlgJoin(sid){
   const x=S.sessions.find(q=>q.id===sid);if(!x)return;const cnt=signupCount(x),R=cnt.R;if(!R)return pSignup(sid);
   const me=selfDoc(DB.uid);if(!me||!me.name){dlgProfile();toast("ตั้งชื่อก่อนลงชื่อเล่น");return;}
   const su=mySignup(sid),cur=su?(su.round===2?2:1):0,row=cnt.list.find(p=>p.id===DB.uid);
+  if(!su&&isFull(cnt)){toast("รอบนี้เต็มทั้งสองรอบ — ส่งข้อความถึงผู้จัดแทน");return dlgJoinReq(sid);}
   const def=cur||(cnt.left1>0?1:2);
   const sub1=cnt.left1>0?`ที่นั่งเหลือ ${cnt.left1}`:"เต็มแล้ว — ต่อคิวสำรอง ถ้ามีคนยกเลิกจะได้เลื่อนขึ้นตามลำดับ";
   const sub2=cnt.left2>0?`ที่นั่งเหลือ ${cnt.left2} · ระบบจัดลงคอร์ดตั้งแต่ ${R.start}`:`เต็มแล้ว — ต่อคิวสำรองรอบ ${R.start}`;
@@ -259,7 +321,7 @@ function dlgJoin(sid){
 }
 document.addEventListener("click",async e=>{
   if(APP.name!=="player")return;
-  const nb=e.target.closest("[data-ptab]");if(nb){ptab=nb.dataset.ptab;try{localStorage.setItem("bgo-ptab",ptab);}catch(_){}render();window.scrollTo(0,0);return;}
+  const nb=e.target.closest("[data-ptab]");if(nb){ptab=nb.dataset.ptab;try{localStorage.setItem(uiKey("bgo-ptab"),ptab);}catch(_){}render();window.scrollTo(0,0);return;}
   if(e.target.closest("#pMe")){if(canSelf())dlgProfile();return;}
   if(e.target.closest("#pBack")){if(PAGE()==="player")goPage("org");else location.hash="";return;}
   const b=e.target.closest("[data-pact],[data-act]");if(!b||b.tagName==="SELECT")return;
@@ -268,6 +330,9 @@ document.addEventListener("click",async e=>{
     case "editProfile":return dlgProfile();
     case "signupFor":{const sid=id||S.sid,x=S.sessions.find(q=>q.id===sid);return x&&roundsOf(x)?dlgJoin(sid):pSignup(sid);}
     case "switchRound":return dlgJoin(id||S.sid);
+    case "joinReq":return dlgJoinReq(id||S.sid);
+    case "jrAck":{const me=selfDoc(DB.uid);if(!me)return;const jr={...(me.joinReqs||{})};if(jr[id])jr[id]={...jr[id],ack:true};await write(`self/${DB.uid}`,{...stripId(me),joinReqs:jr},"รับทราบแล้ว");return;}
+    case "jrCancel":{const me=selfDoc(DB.uid);if(!me)return;const jr={...(me.joinReqs||{})};if(jr[id])jr[id]={...jr[id],cancelled:true};await write(`self/${DB.uid}`,{...stripId(me),joinReqs:jr},"ปิดข้อความแล้ว");return;}
     case "cancelFor":{const ps=S.sid===id?playerStats():null;if(ps&&ps.get(DB.uid).inMatch){toast("คุณอยู่ในแมตช์ ยกเลิกไม่ได้ — แจ้งผู้จัด");return;}
       if(ps&&ps.get(DB.uid).games>0){toast("คุณลงเล่นไปแล้ว ยกเลิกไม่ได้ — ถ้าจะกลับบ้านให้กด \"เช็คเอาท์\" ในคิวของฉัน");return;}
       if(!b.dataset.armed){b.dataset.armed="1";
@@ -285,7 +350,7 @@ document.addEventListener("click",async e=>{
       const su={...(me.signups||{})};su[sid]={...su[sid],checkedOutAt:now()};await write(`self/${DB.uid}`,{...stripId(me),signups:su},"เช็คเอาท์แล้ว — ระบบจะไม่จัดคุณลงคิวอีก");return;}
     case "toggleList":if(openList.has(id))openList.delete(id);else openList.add(id);return render();
     case "useSess":selectSession(id);ptab="queue";return render();
-    case "useSessPay":selectSession(id);ptab="pay";try{localStorage.setItem("bgo-ptab",ptab);}catch(_){}window.scrollTo(0,0);return render();
+    case "useSessPay":selectSession(id);ptab="pay";try{localStorage.setItem(uiKey("bgo-ptab"),ptab);}catch(_){}window.scrollTo(0,0);return render();
     case "newRequest":return dlgRequest();
     case "reqCancel":{const me=selfDoc(DB.uid);const rq={...(me.requests||{})};if(rq[id])rq[id]={...rq[id],cancelled:true};await write(`self/${DB.uid}`,{...stripId(me),requests:rq},"ยกเลิกคำขอแล้ว");return;}
     case "qrSaveMine":{const amt=+b.dataset.amt||0,pq=S.payqr;if(!pq)return;try{
@@ -304,7 +369,7 @@ document.addEventListener("change",e=>{
   if(el.dataset&&el.dataset.pact==="pickMe"){myIdentity=el.value||null;try{localStorage.setItem("bgo-me",myIdentity||"");}catch(_){}render();}
 });
 function startPlayer(){
-  try{const t=localStorage.getItem("bgo-ptab");if(t&&PTABS.some(x=>x.k===t))ptab=t;}catch(e){}
+  try{const t=localStorage.getItem(uiKey("bgo-ptab"));if(t&&PTABS.some(x=>x.k===t))ptab=t;}catch(e){}
   $("#pConn").textContent=SIM?"โหมดจำลอง · เชื่อมกับผู้จัด":DB.mode==="gh"?GHUI.connText("player"):DB.mode==="db"?"เชื่อมกับแอปผู้จัดแบบเรียลไทม์":"โหมดเครื่องเดียว";
   APP.render=pRender;
 }

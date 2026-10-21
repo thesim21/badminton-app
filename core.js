@@ -47,6 +47,8 @@ function skillPicker(name,cur){cur=sk(cur);
 const QS=new URLSearchParams(location.search);
 const SIM=QS.get("sim");            // "org" | "player" | null
 const DB={mode:"local",db:null,uid:(SIM&&QS.get("uid"))||"local-organizer",isOrg:true,canWrite:true,meName:""};
+/* small per-device choices (open round, open tab) are kept per club, so a phone that serves two clubs never carries one club's choices into the other */
+const uiKey=k=>{try{const c=DB.mode==="gh"&&typeof GH!=="undefined"&&GH.cfg;return c&&c.repo?`${k}|${c.repo}`:k;}catch(e){return k;}};
 const LKEY=SIM?"bgo-sim-v1":"bgo-local-v1";
 /* Each document is stored under its own key, so two pages/phones saving at the same moment never overwrite each other. */
 const LP=LKEY+"|";
@@ -138,12 +140,12 @@ function useApp(name){
 window.addEventListener("hashchange",()=>{if(PAGE()!=="index")return;const want=location.hash==="#player"||!DB.realOrg?"player":"org";if(want!==APP.name)useApp(want);});
 /* ================= state ================= */
 const S={notes:[],payqr:null,cfg:null,sessions:[],selfDocs:[],posts:[],slips:[],mod:null,inv:null,members:[],
-  sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null};
-const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2,shuttleDefault:"new"};
+  sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null,joinDec:[]};
+const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2,pointsToWin:21,shuttleDefault:"new"};
 const cfg=()=>({...CFG_DEF,...(S.cfg||{})});
 /* text people typed themselves (names, titles, notes, posts) is never translated: the English switch only changes the app's own wording */
 if(typeof I18N!=="undefined")I18N.protect(()=>{const o=[],add=v=>{if(typeof v==="string"&&v.length<400)o.push(v);},pick=(a,ks)=>(a||[]).forEach(x=>x&&ks.forEach(k=>add(x[k])));
-  pick(S.members,["name","nick","nickname","note"]);pick(S.selfDocs,["name","nick","nickname"]);pick(S.roster,["name","note"]);pick(S.sessions,["title","desc"]);
+  pick(S.members,["name","nick","nickname","note"]);pick(S.selfDocs,["name","nick","nickname"]);pick(S.roster,["name","note","removedReason"]);pick(S.joinDec,["reason"]);(S.selfDocs||[]).forEach(d=>Object.values(d.joinReqs||{}).forEach(q=>q&&add(q.msg)));pick(S.sessions,["title","desc"]);
   pick(S.posts,["author","title","text"]);(S.posts||[]).forEach(d=>(d.comments||[]).forEach(c=>{add(c.text);add(c.author);}));pick(S.decisions,["note"]);
   (S.matches||[]).forEach(m=>(m.subs||[]).forEach(x=>add(x.reason)));
   (S.notes||[]).forEach(n=>Object.values(n.bySid||{}).forEach(v=>{add(v.nm);add(v.adjReason);add(v.rejectNote);}));
@@ -164,6 +166,23 @@ function matchHelpers(m){const st=new Set(matchStarters(m));return [...new Set([
 const matchEveryone=m=>[...new Set([...matchStarters(m),...matchOnCourt(m),...matchHelpers(m)])];
 function matchTimes(m){const stopAt={},joinAt={};(m.subs||[]).forEach(x=>{if(!x.live)return;stopAt[x.out]=x.at;joinAt[x.in]=x.at;delete stopAt[x.in];});return {stopAt,joinAt};}
 function setsResult(sets){let a=0,b=0,d=0;(sets||[]).forEach(x=>{if(x&&x.w==="a")a++;else if(x&&x.w==="b")b++;else if(x&&x.w==="d")d++;});const n=a+b+d;return {a,b,d,n,winner:!n?"":a>b?"a":b>a?"b":"draw"};}
+/* ---- badminton scoring (BWF Laws of Badminton, rally point) ----
+   A set is won by the first side to T points (21) with a 2-point lead. At 20-all play goes on until one side leads by 2; at 29-all the side that scores the 30th point wins.
+   So a finished set can only end 21-0 … 21-19, 22-20 … 29-27, 30-28 or 30-29.  Shorter games keep the same shape: 15 points (cap 21) and 11 points (cap 15). */
+const PTS_CAP={21:30,15:21,11:15};
+const ptsOf=()=>{const t=+cfg().pointsToWin;return PTS_CAP[t]?t:21;};
+function checkSetScore(a,b,T){
+  T=PTS_CAP[T]?T:ptsOf();const C=PTS_CAP[T];a=+a;b=+b;
+  if(!Number.isInteger(a)||!Number.isInteger(b)||a<0||b<0)return {ok:false,msg:"คะแนนต้องเป็นตัวเลขจำนวนเต็ม"};
+  const hi=Math.max(a,b),lo=Math.min(a,b),fmt=`${hi}-${lo}`;
+  if(a===b)return {ok:false,msg:`เสมอกัน ${a}-${b} ไม่ได้ — เซตต้องมีผู้ชนะ (ถ้าเล่นไม่จบ ให้เว้นช่องคะแนนว่างแล้วเลือกผู้ชนะแทน)`};
+  if(hi>C)return {ok:false,msg:`${fmt} เป็นไปไม่ได้ — คะแนนสูงสุดของเซตคือ ${C} (${C}-${C-1})`};
+  if(hi<T)return {ok:false,msg:`${fmt} ยังไม่จบเซต — ผู้ชนะต้องได้ถึง ${T} แต้ม`};
+  if(hi===T)return lo<=T-2?{ok:true}:{ok:false,msg:`${fmt} ยังไม่จบเซต — ต้องนำ 2 แต้ม (เช่น ${T+1}-${T-1})`};
+  if(hi<C)return hi-lo===2?{ok:true}:hi-lo<2?{ok:false,msg:`${fmt} ยังไม่จบเซต — ต้องนำ 2 แต้ม (เช่น ${hi+1}-${lo})`}
+    :{ok:false,msg:`${fmt} เป็นไปไม่ได้ — เมื่อเกิน ${T} แต้ม ผู้ชนะต้องนำพอดี 2 แต้ม (เช่น ${T+2}-${T}, ${T+3}-${T+1})`};
+  return lo>=C-2?{ok:true}:{ok:false,msg:`${fmt} เป็นไปไม่ได้ — ${C} แต้มชนะได้เฉพาะ ${C}-${C-2} หรือ ${C}-${C-1}`};
+}
 function resultText(m){
   if(!m.winner)return "ไม่บันทึกผล";
   const r=m.sets&&m.sets.length?setsResult(m.sets):null,sc=r&&(r.a||r.b)?` ${r.a}–${r.b}`:"";
@@ -195,7 +214,7 @@ function rosterModel(){
     const base=map[r.id]||{id:r.id,account:!r.walkin,signupAt:r.addedAt||0};
     if(!map[r.id]&&!r.walkin){const d=selfDoc(r.id);base.name=d?d.name:r.name;base.skill=d?d.skill:r.skill;}
     const mem=S.members.find(x=>x.id===r.id);
-    map[r.id]={...base,chosen:r.round===1||r.round===2?r.round:(base.chosen||1),early:r.round===1||r.round===2?false:!!base.early,name:(mem&&mem.name)||r.name||base.name||"ผู้เล่น",skill:sk((mem&&mem.skill)||r.skill||base.skill),member:!!mem,walkin:!!r.walkin,override:r.status||null,checkedInAt:r.checkedInAt||null,checkedOutAt:Math.max(+r.checkedOutAt||0,+base.selfCheckOut||0)||null,note:r.note||""};
+    map[r.id]={...base,chosen:r.round===1||r.round===2?r.round:(base.chosen||1),early:r.round===1||r.round===2?false:!!base.early,name:(mem&&mem.name)||r.name||base.name||"ผู้เล่น",skill:sk((mem&&mem.skill)||r.skill||base.skill),member:!!mem,walkin:!!r.walkin,override:r.status||null,checkedInAt:r.checkedInAt||null,checkedOutAt:Math.max(+r.checkedOutAt||0,+base.selfCheckOut||0)||null,note:r.note||"",removedReason:r.status==="removed"?(r.removedReason||""):""};
   });
   const list=Object.values(map).sort((a,b)=>(a.signupAt||0)-(b.signupAt||0)||(a.claimAt||0)-(b.claimAt||0));
   const max=+s.maxPlayers||999,R=roundsOf(s);
@@ -303,6 +322,23 @@ function waitingOrder(roster,ps){
       const ta=A.lastEnd||a.checkedInAt||a.selfCheckIn||0,tb=B.lastEnd||b.checkedInAt||b.selfCheckIn||0;return ta-tb;});
 }
 /* requests: player-created (self docs) + organizer-created (decisions with from) */
+/* "the round is full" messages: a player writes them in his own document (self/<id>.joinReqs); the organizer answers in joinreq/<id>
+   (status queued = put in the line · removed = turned down with a reason the player reads). Cancelled messages are hidden. */
+let jrMemo=null;
+function joinReqModel(){
+  if(jrMemo&&jrMemo.a===S.selfDocs&&jrMemo.b===S.joinDec)return jrMemo.v;
+  const dec={};(S.joinDec||[]).forEach(d=>dec[d.id]=d);
+  const out=[];
+  (S.selfDocs||[]).forEach(d=>Object.entries(d.joinReqs||{}).forEach(([rid,r])=>{
+    if(!r||typeof r!=="object")return;
+    const x=dec[rid]||{},st=r.cancelled?"cancelled":x.status==="queued"||x.status==="removed"?x.status:"pending";
+    if(st==="cancelled")return;
+    out.push({id:rid,uid:d.id,name:d.name||"ผู้เล่น",skill:sk(d.skill),sid:r.sid||"",sTitle:r.sTitle||"",sDate:r.sDate||"",when:r.when==="this"?"this":"next",round:r.round===2?2:r.round===1?1:0,roundLabel:r.roundLabel||"",msg:r.msg||"",at:+r.at||0,
+      status:st,ack:st==="removed"&&!!r.ack,reason:x.reason||"",by:x.by||"",decidedAt:+x.at||0,toSid:x.toSid||"",toRound:x.round===2?2:x.round===1?1:0});
+  }));
+  out.sort((a,b)=>a.at-b.at);
+  jrMemo={a:S.selfDocs,b:S.joinDec,v:out};return out;
+}
 function requestModel(){
   const s=curSession();if(!s)return [];
   const dec={};S.decisions.forEach(d=>dec[d.id]=d);
@@ -655,7 +691,7 @@ function dlgComment(key){
 /* ================= subscriptions ================= */
 function selectSession(id,force){
   if(S.sid===id&&sessSubs.length&&!force)return;
-  S.sid=id||null;try{localStorage.setItem("bgo-sid",S.sid||"");}catch(e){}
+  S.sid=id||null;try{localStorage.setItem(uiKey("bgo-sid"),S.sid||"");}catch(e){}
   sessSubs.forEach(u=>{try{u();}catch(e){}});sessSubs=[];
   S.roster=[];S.matches=[];S.decisions=[];S.pay=[];S.log=[];S.prep=null;S.seen=[];S.seenLoaded=false;
   if(!S.sid){render();return;}
@@ -675,6 +711,7 @@ function startGlobal(){
   watchDoc("inventory/main",d=>{S.inv=d;render();});
   watchDoc("board/mod",d=>{S.mod=d;render();});
   watchCol("self",d=>{const prev=S.selfDocs;S.selfDocs=d;render();orgHook("self",prev);});
+  watchCol("joinreq",d=>{S.joinDec=d;render();orgHook("joinreq");});   // the organizer's answers to "the round is full" messages
   if(DB.realOrg)watchCol("notes",d=>{S.notes=d;render();});
   else if(DB.uid)watchDoc(`notes/${DB.uid}`,d=>{S.notes=d?[{id:DB.uid,...d}]:[];render();});
   watchCol("posts",d=>{S.posts=d;render();});
@@ -684,7 +721,7 @@ function startGlobal(){
   watchCol("sessions",d=>{const prevIds=new Set(S.sessions.map(x=>x.id));const first=!S._sessLoaded;S._sessLoaded=true;if(first&&DB.isOrg&&typeof migrateAllSessions==="function")setTimeout(()=>{migrateAllSessions();},500);
     if(!first&&APP.name==="player"){const nw=d.filter(x=>!prevIds.has(x.id)&&x.status!=="closed");if(nw.length)toast(`มีประกาศใหม่: ${nw[0].title||"รอบเล่น"} — เปิดแท็บ "ประกาศ" เพื่อลงชื่อ`);}
     S.sessions=d;
-    if(!S.sid||!d.some(s=>s.id===S.sid)){let saved=null;try{saved=localStorage.getItem("bgo-sid");}catch(e){}
+    if(!S.sid||!d.some(s=>s.id===S.sid)){let saved=null;try{saved=localStorage.getItem(uiKey("bgo-sid"));}catch(e){}
       let pick=d.find(s=>s.id===saved)||d.slice().sort((a,b)=>Math.abs(dateDiff(a.date))-Math.abs(dateDiff(b.date)))[0];
       /* a player who comes back after a closed round lands on the newest open round (the unpaid reminder and the old bills are one tap away there) */
       if(APP.name==="player"&&pick&&pick.status==="closed"){const nx=d.filter(x=>x.status!=="closed"&&(x.date||"")>=(pick.date||"")).sort((a,b)=>(a.date||"").localeCompare(b.date||""))[0];if(nx)pick=nx;}

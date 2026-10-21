@@ -500,6 +500,7 @@ async function wipeLocal(cfg){
   if(idb){try{idb.close();}catch(e){}idb=null;}
   await new Promise(res=>{try{const r=indexedDB.deleteDatabase(name);r.onsuccess=r.onerror=r.onblocked=()=>res();}catch(e){res();}});
   memKV.clear();clearCfg();
+  try{const dead=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&/^bgo-(sid|tab|ptab)\|/.test(k)&&k.endsWith("|"+cfg.repo))dead.push(k);}dead.forEach(k=>localStorage.removeItem(k));}catch(e){}   // this club's remembered round / tab go with it
 }
 
 /* token replaced (after rotation) */

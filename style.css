@@ -160,7 +160,7 @@ main>*{min-width:0}
 .lvguide .lv div>span{font-size:.86rem;color:var(--muted)}
 
 /* ---------- court cards: a real court seen from above ---------- */
-.courts{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.courts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:14px}   /* min(): a card never forces the page wider than a 320 px phone */
 .court{--ink:#0E1B3F;--muted:#525E86;--ready:#127336;--rest:#9A5800;--play:#2456D6;--off:#5B6684;--warn:#C2410C;--bad:#C62D3F;
   border-radius:22px;overflow:hidden;display:grid;grid-template-rows:auto 1fr auto;color:#fff;
   background:var(--c-out);box-shadow:0 14px 26px -16px rgba(12,28,110,.75),inset 0 0 0 1px rgba(0,0,0,.12)}
@@ -513,3 +513,50 @@ body[data-sim] #roleSwitch,body[data-sim] #pOrgBar{display:none!important}
 .gate-lang{display:flex;justify-content:flex-end;min-height:30px}
 
 .me .notice{background:var(--surface);color:var(--ink)}
+
+/* ---- members page: quota counter, ticking several people, one card per person on phones ---- */
+.quota{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:0 0 10px;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--accent) 5%,var(--surface))}
+.quota .k{font-weight:600}
+.quota.over{border-color:color-mix(in srgb,var(--bad) 55%,var(--line))}
+.quotafig{font-family:var(--font-display);font-weight:700;font-size:1.25rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.quotafig .of{color:var(--muted);font-weight:600}
+.quotafig.over b{color:var(--bad)}
+.over-t{color:var(--bad)}
+.selbar{position:sticky;bottom:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:12px;padding:10px 12px;border:1.5px solid var(--accent);border-radius:14px;background:var(--surface);box-shadow:0 8px 24px -10px rgba(4,10,50,.45);z-index:5}
+.selbar.over{border-color:var(--bad)}
+.selbar .msg{min-width:0}
+.memtbl .c-sel{width:1%}
+.memtbl input[type=checkbox]{width:22px;height:22px;margin:0;accent-color:var(--btn);cursor:pointer}
+.tw .memtbl td.c-name>b{white-space:normal;overflow-wrap:anywhere}
+.memtbl .c-note{overflow-wrap:anywhere}
+.memtbl tr.sel td{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.ov.cfm{z-index:70}
+.cfm-d{width:min(420px,100%)}
+.cfm-b{display:grid;gap:8px}.cfm-b p{margin:0}
+@media (max-width:640px){
+  .memtbl,.memtbl tbody{display:block}
+  .memtbl thead{display:none}
+  .memtbl tr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"sel name sess" "sel lv phone" "sel note note" "sel act act";gap:2px 12px;padding:10px 2px;border-bottom:1px solid var(--line);align-items:center}
+  .memtbl.nosel tr{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name sess" "lv phone" "note note" "act act"}
+  .memtbl tbody tr:hover td,.memtbl tr.sel td{background:none}
+  .memtbl tr.sel{background:color-mix(in srgb,var(--accent) 8%,transparent);border-radius:10px}
+  .memtbl td{display:block;padding:0;border:0;text-align:left;min-width:0;width:auto}
+  .memtbl .c-sel{grid-area:sel;align-self:start;padding:2px 0 0 6px}
+  .memtbl .c-name{grid-area:name}.memtbl .c-lv{grid-area:lv}.memtbl .c-phone{grid-area:phone}.memtbl .c-note{grid-area:note}
+  .memtbl .c-sess{grid-area:sess;justify-self:end}.memtbl .c-act{grid-area:act}
+  .memtbl .c-note.none,.memtbl .c-phone.none{display:none}.memtbl .c-phone{justify-self:end;text-align:right}
+  .memtbl .c-act .acts{justify-content:flex-start}
+  .selbar{bottom:6px}
+}
+
+/* "round is full" messages (player: panel on the announcements tab · organizer: panel on the players tab) */
+.jrl{display:grid;gap:10px}
+.jr{border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:grid;gap:6px;background:var(--surface-2);min-width:0}
+.jr-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
+.jr-h b{overflow-wrap:anywhere;min-width:0}
+.jr-m{margin:0;padding:8px 10px;border-left:3px solid var(--line);background:var(--surface);border-radius:0 10px 10px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.jr-a{display:flex;flex-wrap:wrap;gap:6px}.jr-a:empty{display:none}
+.jr-why{overflow-wrap:anywhere}
+.jr .small{overflow-wrap:anywhere}
+.jr-quick{display:flex;flex-wrap:wrap;gap:6px}
+textarea[name=reason],textarea[name=msg]{width:100%;resize:vertical;min-height:4.5em}

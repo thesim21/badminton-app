@@ -29,8 +29,9 @@ function doRender(){
   // tabs
   const reqPending=requestModel().filter(r=>r.status==="pending").length;
   const payPending=DB.isOrg?payModel().rows.filter(r=>r.state==="pending").length:0;
+  const joinPending=DB.isOrg?joinReqModel().filter(r=>r.status==="pending").length:0;
   const tabsHtml=TABS.filter(x=>(!x.org||DB.isOrg)&&(!x.player||!DB.isOrg||true)).map(x=>{
-    const b=x.k==="requests"&&DB.isOrg&&reqPending?`<span class="badge">${reqPending}</span>`:x.k==="money"&&payPending?`<span class="badge">${payPending}</span>`:"";
+    const b=x.k==="requests"&&DB.isOrg&&reqPending?`<span class="badge">${reqPending}</span>`:x.k==="money"&&payPending?`<span class="badge">${payPending}</span>`:x.k==="players"&&joinPending?`<span class="badge">${joinPending}</span>`:"";
     return `<button role="tab" data-tab="${x.k}" aria-selected="${tab===x.k}">${esc(x.t)}${b}</button>`;}).join("");
   const tabsEl=$("#tabs");if(tabsEl.dataset.h!==tabsHtml){tabsEl.innerHTML=tabsHtml;tabsEl.dataset.h=tabsHtml;}
   const v=$("#view");
@@ -53,14 +54,51 @@ function noSession(){
 }
 /* ---------- members (organizer's master player list) ---------- */
 let memFilter="all";
+const memSel=new Set();     // members ticked on this page, waiting to be added to the open round
 const SK_ORDER=k=>-SKILL[sk(k)].w;
+/* how many people the open round takes: round 1 + round 2 (null when there is no limit to compare with) */
+function sessQuota(s){
+  const max=+s.maxPlayers>0?Math.floor(+s.maxPlayers):0,R=roundsOf(s);
+  if(!max)return null;
+  if(R){if(R.max>=999)return null;return {total:max+R.max,r1:max,r2:R.max,R};}
+  return {total:max,r1:max,r2:0,R:null};
+}
+const quotaText=q=>q.R?`รอบแรก ${q.r1} + รอบสอง ${q.r2}`:`รับ ${q.r1} คน`;
+/* everybody who holds or waits for a place in the round (confirmed + reserve); removed and no-show players do not count */
+const sessHeadcount=()=>rosterModel().filter(p=>p.status==="confirmed"||p.status==="reserve").length;
+/* "26/25" — the figure goes red when it is more than the quota */
+const quotaFig=(n,q)=>`<span class="quotafig${q&&n>q.total?" over":""}"><b class="num">${n}</b>${q?`<span class="of">/${q.total}</span>`:""}</span>`;
+/* a small pop-up that asks a yes/no question. It sits above any dialog that is already open, so asking from inside a form does not close the form. */
+function askConfirm({title,body,ok="ตกลง",cancel="ยกเลิก",danger=false}){
+  return new Promise(res=>{
+    const ov=document.createElement("div");ov.className="ov cfm";
+    ov.innerHTML=`<div class="dlg cfm-d" role="alertdialog" aria-modal="true" aria-labelledby="cfmT" aria-describedby="cfmB"><h2 id="cfmT">${esc(title)}</h2><div id="cfmB" class="cfm-b">${body}</div><div class="dlg-a"><button type="button" class="ghost" data-no>${esc(cancel)}</button><button type="button" class="${danger?"danger":"primary"}" data-yes>${esc(ok)}</button></div></div>`;
+    const prev=document.activeElement;
+    const done=v=>{document.removeEventListener("keydown",key,true);ov.remove();try{prev&&prev.focus&&prev.focus({preventScroll:true});}catch(e){}res(v);};
+    const key=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();done(false);}
+      else if(e.key==="Tab"){const bs=[...ov.querySelectorAll("button")],i=bs.indexOf(document.activeElement);e.preventDefault();bs[(i+(e.shiftKey?-1:1)+bs.length)%bs.length].focus();}};
+    document.addEventListener("keydown",key,true);
+    ov.addEventListener("click",e=>{if(e.target===ov||e.target.closest("[data-no]"))done(false);else if(e.target.closest("[data-yes]"))done(true);});
+    document.body.appendChild(ov);ov.querySelector("[data-no]").focus();
+  });
+}
+/* adding people would go over the places of this round: say so and let the organizer decide */
+async function confirmOverQuota(s,add){
+  const q=sessQuota(s);if(!q||add<=0)return true;
+  const have=sessHeadcount(),after=have+add;if(after<=q.total)return true;
+  return askConfirm({title:"เกินโควต้า",ok:"เพิ่มต่อ",cancel:"ยกเลิก",
+    body:`<p>รอบ "${esc(s.title||"")}" รับได้ <b>${q.total} คน</b> (${quotaText(q)}) · ตอนนี้มี ${have} คน</p><p>เพิ่มอีก ${add} คนจะเป็น <b class="over-t">${after} คน เกินโควต้า ${after-q.total} คน</b></p><p>ต้องการเพิ่มสมาชิกต่อหรือไม่?</p><p class="small muted">คนที่เกินโควต้าจะอยู่ในรายชื่อสำรองจนกว่าจะมีที่ว่าง (ถ้าเลือก “เช็คอินทันที” จะนับเป็นตัวจริงเลย)</p>`});
+}
 function vMembers(){
-  const s=curSession();const roster=s?rosterModel():[];
+  const s=curSession(),open=!!s&&s.status!=="closed";const roster=s?rosterModel():[];
   const inSess=id=>{const p=roster.find(x=>x.id===id);return p&&p.status!=="removed"?p:null;};
   const all=S.members.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","th"));
   const tierOf=m=>SKILL[sk(m.skill)].tier;
   const list=memFilter==="all"?all:all.filter(m=>tierOf(m)===memFilter);
   const cnt=k=>all.filter(m=>tierOf(m)===k).length;
+  for(const id of [...memSel])if(!open||!S.members.some(m=>m.id===id)||inSess(id))memSel.delete(id);   // someone already added (or deleted) is no longer "waiting"
+  const q=open?sessQuota(s):null,have=open?sessHeadcount():0,pend=memSel.size,after=have+pend,over=!!q&&after>q.total;
+  const pickable=list.filter(m=>!inSess(m.id)),allTicked=pickable.length>0&&pickable.every(m=>memSel.has(m.id));
   return `<section class="kpis">
     <div class="kpi"><span class="k">สมาชิกทั้งหมด</span><span class="v">${all.length}</span><span class="s">คน</span></div>
     ${Object.entries(SKILL_TIERS).map(([k,v])=>`<div class="kpi"><span class="k">${v.t} (${v.r})</span><span class="v">${cnt(k)}</span><span class="s">คน</span></div>`).join("")}
@@ -69,14 +107,24 @@ function vMembers(){
     <div class="seg" role="group">${[["all","ทั้งหมด"],...Object.entries(SKILL_TIERS).map(([k,v])=>[k,`${v.t} ${v.r}`])].map(([k,t])=>`<button data-act="memFilter" data-k="${k}" aria-pressed="${memFilter===k}">${t}</button>`).join("")}</div>
     <span class="sp"></span><button class="primary" data-act="addMember">+ เพิ่มสมาชิก</button><button data-act="bulkMembers">เพิ่มหลายคน</button>
     ${s&&all.length?`<button data-act="addFromMembers">เพิ่มเข้ารอบ "${esc(s.title||"")}"</button>`:""}</div>
-    <p class="small muted" style="margin:0 0 10px">บันทึกรายชื่อและระดับฝีมือไว้ครั้งเดียว แล้วดึงเข้ารอบเล่นไหนก็ได้ · แก้ระดับฝีมือที่นี่ ระบบจับคู่จะใช้ค่าใหม่ทันที</p>
-    ${list.length?`<div class="tw"><table><thead><tr><th>ชื่อ</th><th>ระดับฝีมือ</th><th>เบอร์โทร</th><th>หมายเหตุ</th>${s?"<th>รอบนี้</th>":""}<th></th></tr></thead><tbody>${list.map(m=>{const p=inSess(m.id);
-      return `<tr><td><b>${esc(m.name)}</b></td><td>${skillChip(m.skill)} <span class="small">${esc(SKILL[sk(m.skill)].t)}</span></td><td class="num small">${esc(m.phone||"–")}</td><td class="small">${esc(m.note||"")}</td>
-      ${s?`<td>${p?`<span class="chip ${p.checkedIn?"s-ready":"s-queued"}">${p.checkedIn?"เช็คอินแล้ว":p.status==="reserve"?"สำรอง":"อยู่ในรอบ"}</span>`:`<button class="sm" data-act="memToSession" data-id="${esc(m.id)}">+ เข้ารอบนี้</button>`}</td>`:""}
-      <td><div class="acts"><button class="ghost sm" data-act="editMember" data-id="${esc(m.id)}">แก้ไข</button><button class="ghost sm" data-act="delMember" data-id="${esc(m.id)}">ลบ</button></div></td></tr>`;}).join("")}</tbody></table></div>`
+    ${open?`<div class="quota${over?" over":""}" id="quotaBox" role="status"><span class="k">เลือกเข้ารอบนี้</span>${quotaFig(have,q)}<span class="small">คน${q?` · ${quotaText(q)}`:""}${over?` · <b class="over-t">เกินโควต้า ${have-q.total} คน</b>`:""}</span></div>`:""}
+    <p class="small muted" style="margin:0 0 10px">บันทึกรายชื่อและระดับฝีมือไว้ครั้งเดียว แล้วดึงเข้ารอบเล่นไหนก็ได้ · แก้ระดับฝีมือที่นี่ ระบบจับคู่จะใช้ค่าใหม่ทันที${open?" · ติ๊กเลือกหลายคนแล้วกด “เพิ่มเข้ารอบ” ได้":""}</p>
+    ${list.length?`<div class="tw"><table class="memtbl${open?"":" nosel"}"><thead><tr>${open?`<th class="c-sel"><input type="checkbox" data-memall aria-label="เลือกทุกคนที่ยังไม่อยู่ในรอบ"${allTicked?" checked":""}${pickable.length?"":" disabled"}></th>`:""}<th>ชื่อ</th><th>ระดับฝีมือ</th><th>เบอร์โทร</th><th>หมายเหตุ</th>${s?"<th>รอบนี้</th>":""}<th></th></tr></thead><tbody>${list.map(m=>{const p=inSess(m.id);
+      return `<tr${memSel.has(m.id)?' class="sel"':""}>${open?`<td class="c-sel">${p?"":`<input type="checkbox" data-memsel="${esc(m.id)}" aria-label="เลือก ${esc(m.name)} เข้ารอบนี้"${memSel.has(m.id)?" checked":""}>`}</td>`:""}<td class="c-name"><b>${esc(m.name)}</b></td><td class="c-lv">${skillChip(m.skill)} <span class="small">${esc(SKILL[sk(m.skill)].t)}</span></td><td class="c-phone num small${m.phone?"":" none"}">${esc(m.phone||"–")}</td><td class="c-note small${m.note?"":" none"}">${esc(m.note||"")}</td>
+      ${s?`<td class="c-sess">${p?`<span class="chip ${p.checkedIn?"s-ready":"s-queued"}">${p.checkedIn?"เช็คอินแล้ว":p.status==="reserve"?"สำรอง":"อยู่ในรอบ"}</span>`:`<button class="sm" data-act="memToSession" data-id="${esc(m.id)}">+ เข้ารอบนี้</button>`}</td>`:""}
+      <td class="c-act"><div class="acts"><button class="ghost sm" data-act="editMember" data-id="${esc(m.id)}">แก้ไข</button><button class="ghost sm" data-act="delMember" data-id="${esc(m.id)}">ลบ</button></div></td></tr>`;}).join("")}</tbody></table></div>`
       :`<div class="empty">${all.length?"ไม่มีสมาชิกในระดับนี้":"ยังไม่มีสมาชิก — กด \"+ เพิ่มสมาชิก\" หรือ \"เพิ่มหลายคน\" เพื่อวางรายชื่อจาก LINE / Excel"}</div>`}
+    ${open&&pend?`<div class="selbar${over?" over":""}" role="status"><span class="msg">เลือกไว้ <b>${pend}</b> คน · รอบนี้จะมี ${quotaFig(after,q)} คน${over?` · <b class="over-t">เกินโควต้า ${after-q.total} คน</b>`:""}</span><span class="sp"></span><button class="ghost sm" data-act="memClear">ล้าง</button><button class="primary" data-act="memAddSel">เพิ่มเข้ารอบ ${pend} คน</button></div>`:""}
   </section>`;
 }
+/* ticking boxes on the members page: keep the choice, repaint at once and keep the keyboard where it was */
+document.addEventListener("change",e=>{
+  if(APP.name!=="org")return;const el=e.target;if(!el||!el.dataset)return;
+  if(el.dataset.memsel!==undefined){if(el.checked)memSel.add(el.dataset.memsel);else memSel.delete(el.dataset.memsel);memRepaint(`[data-memsel="${el.dataset.memsel.replace(/"/g,'\\"')}"]`);}
+  else if(el.dataset.memall!==undefined){const s=curSession(),ro=s?rosterModel():[],ids=(memFilter==="all"?S.members:S.members.filter(m=>SKILL[sk(m.skill)].tier===memFilter)).filter(m=>!ro.some(p=>p.id===m.id&&p.status!=="removed")).map(m=>m.id);
+    ids.forEach(id=>el.checked?memSel.add(id):memSel.delete(id));memRepaint("[data-memall]");}
+});
+function memRepaint(focusSel){if(APP.render)APP.render();const f=focusSel&&document.querySelector(focusSel);if(f)try{f.focus({preventScroll:true});}catch(e){}}
 /* reads a level from pasted text: codes (BG N S P- P P+ C B A), 1–9, Thai names, or the old มือใหม่/กลาง/เก่ง words */
 function parseSkill(t){t=String(t||"").trim();if(!t)return null;const u=t.toUpperCase().replace(/\s+/g,"").replace("มือ","");
   const byCode=SKILL_KEYS.find(k=>SKILL[k].c===u);if(byCode)return byCode;
@@ -141,18 +189,31 @@ function parseBulk(text){
   return {ok,bad};
 }
 async function addMembersToSession(ids,checkin,fallback){
-  const s=curSession();if(!s)return;
-  let n=0;const dupSkipped=[];
+  const s=curSession();if(!s)return false;
+  const dupSkipped=[],todo=[],ro=rosterModel();
   for(const id of ids){
     const m=S.members.find(x=>x.id===id)||(fallback||[]).find(x=>x.id===id);if(!m)continue;
     const ex=S.roster.find(r=>r.id===id);
-    if(!ex&&rosterModel().some(p=>p.status!=="removed"&&p.id!==id&&(p.name||"").trim().toLowerCase()===(m.name||"").trim().toLowerCase())){dupSkipped.push(m.name);continue;}
+    if(!ex&&ro.some(p=>p.status!=="removed"&&p.id!==id&&(p.name||"").trim().toLowerCase()===(m.name||"").trim().toLowerCase())){dupSkipped.push(m.name);continue;}
+    todo.push({id,m,ex});
+  }
+  /* more people than the round takes: ask before adding (the organizer may still go ahead) */
+  const fresh=todo.filter(x=>!ro.some(p=>p.id===x.id&&(p.status==="confirmed"||p.status==="reserve"))).length;
+  if(s.status!=="closed"&&!await confirmOverQuota(s,fresh)){toast("ยกเลิกการเพิ่มเข้ารอบ");return false;}
+  let n=0;
+  /* with a second round, the people beyond round 1's places go to round 2 while it still has room (otherwise they would just wait as reserve) */
+  const R=roundsOf(s),r1=+s.maxPlayers>0?+s.maxPlayers:999;
+  let c1=ro.filter(p=>(p.status==="confirmed"&&p.round===1)||(p.status==="reserve"&&p.want!==2)).length,c2=ro.filter(p=>(p.status==="confirmed"&&p.round===2)||(p.status==="reserve"&&p.want===2)).length;
+  for(const {id,m,ex} of todo){
     const data={...(ex?stripId(ex):{}),name:m.name,skill:m.skill,walkin:true,memberId:id,addedAt:(ex&&ex.addedAt)||now()+n};
     if(ex&&ex.status==="removed")data.status=null;
+    if(!(ex&&(ex.round===1||ex.round===2))){
+      if(R&&c1>=r1&&c2<R.max){data.round=2;c2++;}else c1++;}
     if(checkin){data.checkedInAt=now();data.checkedOutAt=null;}
     if(await write(`sessions/${s.id}/roster/${id}`,data))n++;
   }
   toast(`เพิ่มเข้ารอบแล้ว ${n} คน${checkin?" (เช็คอินแล้ว)":""}${dupSkipped.length?` · ข้ามชื่อซ้ำ: ${dupSkipped.join(", ")}`:""}`);logEv("เพิ่มสมาชิกเข้ารอบ",`${n} คน`);
+  return true;
 }
 function dlgAddFromMembers(){
   const s=curSession();if(!s){toast("สร้างรอบเล่นก่อน");return;}
@@ -163,7 +224,7 @@ function dlgAddFromMembers(){
   const avail=S.members.filter(m=>!live.some(p=>p.id===m.id)&&!sameName(m)).sort((a,b)=>SK_ORDER(a.skill)-SK_ORDER(b.skill)||(a.name||"").localeCompare(b.name||"","th"));
   if(!S.members.length){dlgMember();toast("ยังไม่มีสมาชิก — เพิ่มสมาชิกก่อน");return;}
   openDlg(`<form novalidate><h2>เพิ่มสมาชิกเข้ารอบ "${esc(s.title||"")}"</h2>
-    ${avail.length?`<div class="ph" style="margin:0"><span class="small muted">เลือกแล้ว <b id="selCnt">0</b> จาก ${avail.length} คน</span><span class="sp"></span><button type="button" class="ghost sm" data-pickall="1">เลือกทั้งหมด</button><button type="button" class="ghost sm" data-pickall="">ล้าง</button></div>
+    ${avail.length?`<div class="ph" style="margin:0"><span class="small muted">เลือกแล้ว <b id="selCnt">0</b> จาก ${avail.length} คน${(()=>{const q=s.status!=="closed"?sessQuota(s):null;return q?` · รอบนี้จะมี <span id="selTot">${quotaFig(sessHeadcount(),q)}</span> คน`:"";})()}</span><span class="sp"></span><button type="button" class="ghost sm" data-pickall="1">เลือกทั้งหมด</button><button type="button" class="ghost sm" data-pickall="">ล้าง</button></div>
     <div class="pick">${avail.map(m=>`<label><input type="checkbox" name="m" value="${esc(m.id)}">${skillChip(m.skill)}<span>${esc(m.name)}</span></label>`).join("")}</div>
     <label class="f">สถานะ<select name="ci"><option value="1">เช็คอินทันที (อยู่ที่สนามแล้ว)</option><option value="">ลงชื่อไว้ก่อน ยังไม่เช็คอิน</option></select></label><span class="ferr" id="pickErr"></span>`
     :`<div class="empty">สมาชิกทุกคนอยู่ในรอบนี้แล้ว</div>`}
@@ -171,9 +232,10 @@ function dlgAddFromMembers(){
     <div class="dlg-a"><button type="button" class="ghost" data-close>ปิด</button><button type="button" data-act="addMember">+ สมาชิกใหม่</button>${avail.length?'<button type="submit" class="primary">เพิ่มเข้ารอบ</button>':""}</div></form>`,async f=>{
     const ids=[...f.querySelectorAll("[name=m]:checked")].map(x=>x.value);
     if(!ids.length){$("#pickErr").textContent="เลือกอย่างน้อย 1 คน";return false;}
-    await addMembersToSession(ids,!!fv(f,"ci"));return true;
+    return (await addMembersToSession(ids,!!fv(f,"ci")))!==false;
   });
-  const f=$("#dlg form");const upd=()=>{const c=$("#selCnt");if(c)c.textContent=f.querySelectorAll("[name=m]:checked").length;};
+  const f=$("#dlg form");const upd=()=>{const n=f.querySelectorAll("[name=m]:checked").length,c=$("#selCnt");if(c)c.textContent=n;
+    const t=$("#selTot"),q=sessQuota(s);if(t&&q&&s.status!=="closed")t.innerHTML=quotaFig(sessHeadcount()+n,q);};
   f.addEventListener("change",upd);
   f.querySelectorAll("[data-pickall]").forEach(b=>b.addEventListener("click",()=>{f.querySelectorAll("[name=m]").forEach(x=>x.checked=!!b.dataset.pickall);upd();}));
 }
@@ -246,7 +308,7 @@ function vPlayers(){
   if(DB.isOrg)h+=`<section class="panel"><div class="ph"><h2>รอบเล่น / ประกาศรับสมัคร</h2><span class="sp"></span><button class="primary" data-act="newSession">+ สร้างรอบใหม่</button>${s?`<button data-act="copyAnnounce">คัดลอกประกาศ</button><button data-act="editSession">แก้ไขรอบนี้</button>${s.status!=="closed"?`<button class="ghost" data-act="closeSession">ปิดรอบ</button>`:`<button class="ghost" data-act="reopenSession">เปิดรอบอีกครั้ง</button>`}`:""}</div>
     ${s?sessionCard(s):"<div class='empty'>ยังไม่มีรอบเล่น</div>"}</section>`;
   else if(s)h+=`<section class="panel">${sessionCard(s)}</section>`;
-  if(!s)return h||noSession();
+  if(!s)return (h+jrPanel())||noSession();
   const roster=rosterModel(),ps=playerStats(),t=now();
   const groups={confirmed:roster.filter(p=>p.status==="confirmed"),reserve:roster.filter(p=>p.status==="reserve"),noshow:roster.filter(p=>p.status==="noshow"),removed:roster.filter(p=>p.status==="removed")};
   const dl=roster.deadline;
@@ -261,6 +323,7 @@ function vPlayers(){
     if(wait2>0&&roster.some(p=>p.notYet))h+=wait2>12*3600e3
       ?`<div class="notice warn">ผู้เล่นรอบ ${esc(R.start)} ยังไม่เข้าคิว เพราะวันที่ของรอบนี้คือ <b>${esc(fmtD(s.date))}</b> แต่นาฬิกาเครื่องนี้ตอนนี้คือ ${esc(hm(t))} — ยังไม่ถึงรอบ ${esc(R.start)} ของวันนั้น · ถ้าเล่นวันนี้ให้กด "แก้ไขรอบนี้" แล้วแก้วันที่</div>`
       :`<div class="notice">ผู้เล่นรอบ ${esc(R.start)} จะเข้าคิวอีก <b><span data-until="${t2}" data-pre="">${mmss(wait2)}</span></b> · นาฬิกาเครื่องนี้ ${esc(hm(t))} (ถ้าไม่ตรงกับนาฬิกาจริง ให้ตั้งเวลาเครื่องเป็นอัตโนมัติ)</div>`;}
+  h+=jrPanel();
   const list=groups[rosterTab]||[];
   h+=`<section class="panel"><div class="ph"><h2>รายชื่อผู้เล่น</h2>
     <div class="seg" role="group">${[["confirmed","ตัวจริง"],["reserve","สำรอง"],...(groups.noshow.length?[["noshow","ไม่มา"]]:[]),["removed","นำออก"]].map(([k,tx])=>`<button data-act="rosterTab" data-k="${k}" aria-pressed="${rosterTab===k}">${tx} ${groups[k].length}</button>`).join("")}</div>
@@ -275,6 +338,74 @@ function vPlayers(){
         ${p.status==="removed"?`<button class="sm" data-act="restore" data-id="${esc(p.id)}">คืนรายชื่อ</button>`:`<button class="ghost sm" data-act="editPlayer" data-id="${esc(p.id)}">แก้ไข</button><button class="ghost sm" data-act="removeP" data-id="${esc(p.id)}">นำออก</button>`}</div></td>`:""}</tr>`;}).join("")}</tbody></table></div>`:`<div class="empty">ไม่มีผู้เล่นในกลุ่มนี้</div>`}
   </section>`;
   return h;
+}
+/* ---------- "the round is full" messages from players ---------- */
+/* the organizer keeps the wishes of people who could not sign up: puts them in the line of the open round, or turns them down with a reason they read */
+function jrPanel(){
+  if(!DB.isOrg)return "";
+  const all=joinReqModel(),pend=all.filter(r=>r.status==="pending"),done=all.filter(r=>r.status!=="pending").sort((a,b)=>(b.decidedAt||b.at)-(a.decidedAt||a.at)).slice(0,6);
+  if(!pend.length&&!done.length)return "";
+  const s=curSession(),open=!!s&&s.status!=="closed",ro=open?rosterModel():[];
+  const where=r=>`${r.sTitle||"รอบเล่น"}${r.sDate?" · "+fmtD(r.sDate):""}`;
+  const card=r=>{const inNow=open&&ro.some(p=>p.id===r.uid&&p.status!=="removed");
+    return `<article class="jr"><div class="jr-h"><b>${esc(r.name)}</b>${skillChip(r.skill)}<span class="chip s-warn">${r.when==="next"?"ขอจองรอบหน้า":"ขอรอบนี้"}</span>${r.roundLabel?`<span class="chip s-queued">${esc(r.roundLabel)}</span>`:""}</div>
+      <div class="small muted">ส่งเมื่อ ${esc(fmtDT(r.at))} · จากรอบ ${esc(where(r))}</div>${r.msg?`<p class="jr-m">${esc(r.msg)}</p>`:""}
+      ${inNow?`<div class="small">อยู่ในรอบ “${esc(s.title||"")}” แล้ว</div>`:""}
+      <div class="jr-a"><button class="primary sm" data-act="jrQueue" data-id="${esc(r.id)}">เข้าคิว</button><button class="ghost sm" data-act="jrRemove" data-id="${esc(r.id)}">นำออก</button></div></article>`;};
+  const row=r=>`<div class="jr jr-${r.status}"><div class="jr-h"><b>${esc(r.name)}</b><span class="chip ${r.status==="queued"?"s-ready":"s-bad"}">${r.status==="queued"?"เข้าคิวแล้ว":"นำออกแล้ว"}</span><span class="small muted">${esc(r.when==="next"?"ขอจองรอบหน้า":"ขอรอบนี้")}${r.roundLabel?" · "+esc(r.roundLabel):""}</span></div>
+      ${r.status==="removed"?`<div class="small jr-why"><b>เหตุผลที่แจ้งผู้เล่น:</b> ${esc(r.reason||"-")}</div><div class="jr-a"><button class="ghost sm" data-act="jrReopen" data-id="${esc(r.id)}">กลับไปรอพิจารณา</button></div>`:""}</div>`;
+  return `<section class="panel jrp" id="jrPanel"><div class="ph"><h2>คำขอเล่นเมื่อรอบเต็ม</h2><span class="muted small">${pend.length?`รอพิจารณา ${pend.length} คน`:"ไม่มีคำขอค้าง"}</span></div>
+    ${pend.length?`<p class="small muted" style="margin:0 0 10px">${open?`“เข้าคิว” = ใส่ชื่อเข้ารอบ “${esc(s.title||"รอบเล่น")}” · `:`ยังไม่มีรอบที่เปิดอยู่ — สร้างรอบใหม่ก่อนจึงจะเข้าคิวได้ · `}“นำออก” = ปฏิเสธและบอกเหตุผลให้ผู้เล่น</p><div class="jrl">${pend.map(card).join("")}</div>`:""}
+    ${done.length?`<details class="jr-done"${pend.length?"":" open"}><summary class="small">ตอบแล้วล่าสุด ${done.length} รายการ</summary><div class="jrl" style="margin-top:8px">${done.map(row).join("")}</div></details>`:""}</section>`;
+}
+async function jrQueue(id){
+  const r=joinReqModel().find(x=>x.id===id);if(!r||r.status!=="pending")return;
+  const s=curSession();
+  if(!s||s.status==="closed"){toast("ยังไม่มีรอบที่เปิดอยู่ — สร้างรอบใหม่ก่อน แล้วค่อยกด “เข้าคิว”");return;}
+  const ro=rosterModel(),have=ro.find(p=>p.id===r.uid&&p.status!=="removed");
+  let rd=0;
+  if(!have){
+    if(!await confirmOverQuota(s,1)){toast("ยังไม่ได้เข้าคิว");return;}
+    /* with a second round: the player's wish if he named a round, otherwise round 2 while round 1 is full and round 2 still has room */
+    const R=roundsOf(s),r1=+s.maxPlayers>0?+s.maxPlayers:999;
+    const c1=ro.filter(p=>(p.status==="confirmed"&&p.round===1)||(p.status==="reserve"&&p.want!==2)).length,c2=ro.filter(p=>(p.status==="confirmed"&&p.round===2)||(p.status==="reserve"&&p.want===2)).length;
+    rd=R?(r.round===2?2:r.round===1?0:(c1>=r1&&c2<R.max?2:0)):0;
+    const ex=S.roster.find(x=>x.id===r.uid);
+    const data={...(ex?stripId(ex):{addedAt:now(),walkin:false}),...(rd?{round:rd}:{})};
+    if(ex&&ex.status==="removed"){data.status=null;delete data.removedReason;delete data.removedAt;}
+    if(!await write(`sessions/${s.id}/roster/${r.uid}`,data))return;
+  }
+  if(await write(`joinreq/${id}`,{owner:r.uid,status:"queued",toSid:s.id,round:have?(have.round||have.want||0):rd,at:now(),by:DB.meName||"ผู้จัด"},`เข้าคิวแล้ว: ${r.name}`))logEv("รับคำขอเข้าคิว",`${r.name} → ${s.title||"รอบเล่น"}`);
+}
+/* a small form with one reason box; the player reads the text (required for a turned-down request, optional when taking someone off the list) */
+function dlgReason({title,hint,required,ph,ok="ตกลง",onOk}){
+  const quick=["รอบนี้เต็มโควต้าแล้ว","ขอเชิญรอบหน้า"];
+  openDlg(`<form novalidate style="display:grid;gap:12px"><h2>${esc(title)}</h2>${hint?`<p class="small muted" style="margin:0">${hint}</p>`:""}
+    <label class="f">เหตุผล${required?"":" (ไม่บังคับ)"}<textarea name="reason" rows="3" maxlength="200" placeholder="${esc(ph||"")}"></textarea><span class="ferr"></span></label>
+    <div class="jr-quick">${quick.map(t=>`<button type="button" class="ghost sm" data-fill="${esc(t)}">${esc(t)}</button>`).join("")}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">${esc(ok)}</button></div></form>`,async f=>{
+    const reason=fv(f,"reason");if(required&&!reason)return fieldErr(f,"reason","ใส่เหตุผลก่อน — ผู้เล่นจะเห็นข้อความนี้");
+    return onOk(reason);});
+}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-fill]");if(!b)return;const t=document.querySelector("#dlg textarea[name=reason]");if(!t)return;t.value=b.dataset.fill;t.classList.remove("bad");const er=t.parentElement.querySelector(".ferr");if(er)er.textContent="";t.focus();});
+function dlgJoinRemove(id){
+  const r=joinReqModel().find(x=>x.id===id);if(!r||r.status!=="pending")return;
+  dlgReason({title:`นำออก · ${r.name}`,hint:"ผู้เล่นจะเห็นเหตุผลนี้ในแอปของเขา",required:true,ph:"เช่น รอบนี้เต็มโควต้าแล้ว ขอเชิญรอบหน้า",
+    onOk:async reason=>{const ok=await write(`joinreq/${id}`,{owner:r.uid,status:"removed",reason,at:now(),by:DB.meName||"ผู้จัด"},`นำออกแล้ว: ${r.name} — ผู้เล่นจะเห็นเหตุผล`);if(ok)logEv("ปฏิเสธคำขอเล่นเมื่อรอบเต็ม",`${r.name}: ${reason}`);return ok;}});
+}
+/* taking someone off the list of the open round (confirmed or reserve) */
+function dlgRemovePlayer(p){
+  const reserve=p.status==="reserve",acct=!p.walkin&&!p.member;
+  dlgReason({title:`นำออก · ${p.name}`,hint:acct?"ผู้เล่นเห็นเหตุผลนี้ในแอปของเขา · กด “คืนรายชื่อ” ได้ภายหลัง":"คนนี้ไม่ได้ลงชื่อเองในแอป — เหตุผลเก็บไว้ให้ผู้จัดดู · กด “คืนรายชื่อ” ได้ภายหลัง",required:reserve,ph:"เช่น รอบนี้เต็มโควต้าแล้ว",
+    onOk:async reason=>{const ok=await rosterPatch(p.id,{status:"removed",removedReason:reason,removedAt:now()},"นำออกแล้ว");if(ok)logEv("นำผู้เล่นออก",`${p.name}${reason?": "+reason:""}`);return ok;}});
+}
+let jrSeen=null;
+/* a new message from a player: tell the organizer once */
+function jrWatch(){
+  if(!DB.isOrg)return;
+  const pend=joinReqModel().filter(r=>r.status==="pending");
+  if(jrSeen){const nw=pend.filter(r=>!jrSeen.has(r.id));if(nw.length)toast(`มีข้อความขอเล่นใหม่จาก ${nw.map(r=>r.name).join(", ")} — ดูแท็บ “ประกาศ & ผู้เล่น”`);}
+  jrSeen=new Set([...(jrSeen||[]),...pend.map(r=>r.id)]);
 }
 /* ---------- requests ---------- */
 function vRequests(){
@@ -556,6 +687,7 @@ function vSettings(){
     <tr><th>กฎพักขั้นต่ำหลังจบเกม</th><td><b>${c.restMin} นาที</b> — ระบบจับคู่อัตโนมัติจะไม่เลือกผู้เล่นที่ยังพักไม่ครบ</td></tr>
     <tr><th>เวลาเฉลี่ยต่อเกม</th><td>${c.avgMin} นาที (ใช้คำนวณเวลาที่คาดว่าจะได้ลง)</td></tr>
     <tr><th>จำนวนเซตต่อเกม</th><td><b>${setsOf(null)} เซต</b> — ชนะเซตเท่ากันนับเป็นเสมอ · ตั้งเฉพาะรอบได้ตอนสร้าง/แก้ไขรอบเล่น</td></tr>
+    <tr><th>คะแนนต่อเซต</th><td><b>${ptsOf()} แต้ม</b> — นำ 2 แต้ม · ถ้า ${ptsOf()-1}-${ptsOf()-1} เล่นต่อจนนำ 2 แต้ม · สูงสุด ${PTS_CAP[ptsOf()]}-${PTS_CAP[ptsOf()]-1} (กติกา BWF) · ระบบไม่รับคะแนนที่เป็นไปไม่ได้</td></tr>
     <tr><th>คู่ล่วงหน้าต่อคอร์ด</th><td>${c.queueDepth} คู่</td></tr>
     <tr><th>จัดคู่ให้ฝีมือสมดุล</th><td>${c.balance?"เปิด":"ปิด"}</td></tr>
     <tr><th>อนุมัติคำขอคู่ที่ขอกันเองอัตโนมัติ</th><td>${c.autoMutual?"เปิด":"ปิด"}</td></tr>
@@ -740,7 +872,7 @@ function dlgClose(){
     }
     for(const p of rosterModel().filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.checkedOutAt))await rosterPatch(p.id,{checkedOutAt:t});
     const ok=await write(`sessions/${live.id}`,{...stripId(live),status:"closed",closedAt:t,priceSnap:priceSnapNow()},"ปิดรอบแล้ว — ตรวจยอดเงินได้ที่แท็บค่าใช้จ่าย");
-    if(ok){refreshSummary();logEv("ปิดรอบ",`${playing.length?`เกมที่ค้าง ${playing.length} (${mode==="cancel"?"ยกเลิก":"จบไม่บันทึกผล"}) · `:""}ค้างจ่าย ${unpaid.length} คน ${baht(owed)} ฿`);tab="money";try{localStorage.setItem("bgo-tab",tab);}catch(_){}render();}
+    if(ok){refreshSummary();logEv("ปิดรอบ",`${playing.length?`เกมที่ค้าง ${playing.length} (${mode==="cancel"?"ยกเลิก":"จบไม่บันทึกผล"}) · `:""}ค้างจ่าย ${unpaid.length} คน ${baht(owed)} ฿`);tab="money";try{localStorage.setItem(uiKey("bgo-tab"),tab);}catch(_){}render();}
     return ok;
   });
 }
@@ -749,7 +881,7 @@ function dlgEnd(m,edit){
   const L=esc(m.a.map(nameOf).join(" + ")),R=esc(m.b.map(nameOf).join(" + "));
   const rows=Array.from({length:N},(_,i)=>`<div class="setrow"><span class="sn">เซต ${i+1}</span>
       <select name="sw${i}" aria-label="ผลเซต ${i+1}"><option value="">—</option><option value="a">ซ้ายชนะ</option><option value="b">ขวาชนะ</option><option value="d">เสมอ</option></select>
-      <input name="ss${i}" maxlength="14" placeholder="คะแนน 21-18" autocomplete="off" aria-label="คะแนนเซต ${i+1}"><span class="ferr"></span></div>`).join("");
+      <input name="ss${i}" maxlength="14" placeholder="คะแนน ${ptsOf()}-18" autocomplete="off" aria-label="คะแนนเซต ${i+1}"><span class="ferr"></span></div>`).join("");
   const starters=matchStarters(m),payers=starters.map(nameOf).join(", ");
   openDlg(`<form novalidate><h2>${edit?"แก้ไขผลเกม":"จบเกม"} · คอร์ด ${esc(m.court)}</h2>
     <div class="vsline"><span class="ta">ซ้าย: ${L}</span><span class="tb">ขวา: ${R}</span></div>
@@ -757,7 +889,7 @@ function dlgEnd(m,edit){
     <div class="notice" id="resSum" role="status" style="margin:10px 0 4px"></div>
     ${m.free?`<div class="notice" style="margin:0 0 8px"><b>เกมฟรี (ลูกซ่อม)</b> — ไม่คิดค่าลูกของผู้เล่น${m.setsN?` · ${m.setsN} เซต`:""}</div>`:""}
     <div class="fg">${intIn("shuttles","ลูกใหม่ที่ใช้ (คิดเงิน)",m.free?0:(edit?(m.shuttles||0):X.sh),0,30)}${intIn("repair","ลูกซ่อมที่ใช้ (ไม่คิดเงิน)",edit?(m.repair||0):X.rp,0,30)}</div>
-    <p class="small muted" style="margin:0">ใส่แค่ผู้ชนะของแต่ละเซต หรือใส่แค่คะแนน (ระบบดูผู้ชนะให้) · ชนะเซตเท่ากัน = เสมอ · ไม่ใส่เลย = ไม่บันทึกผล<br>${edit?"แก้ไขแล้วบิลของผู้เล่นและสต็อกลูกจะปรับตามอัตโนมัติ · เวลาพักไม่เปลี่ยน":`ผู้เล่นเริ่มพัก ${cfg().restMin} นาทีนับจากตอนนี้${inv.some(i=>i.shuttle||i.repair)?" · หักจากสต็อกอัตโนมัติ":""}`}${m.free?"":` · ค่าลูกใหม่ลูกละ ${unit(cfg().shuttleFee)} ฿${cfg().shuttleSplit==="shared"?" หาร 4":" ต่อคน"} — ผู้จ่าย: <b>${esc(payers)}</b>${m.orig?" (คนที่เริ่มเกม รวมคนที่ออกกลางเกม · คนที่เข้าแทนไม่จ่าย)":""}`}</p>
+    <p class="small muted" style="margin:0">ใส่แค่ผู้ชนะของแต่ละเซต หรือใส่แค่คะแนน (ระบบดูผู้ชนะให้) · ชนะเซตเท่ากัน = เสมอ · ไม่ใส่เลย = ไม่บันทึกผล<br>คะแนนตามกติกา BWF: ถึง ${ptsOf()} แต้มและนำ 2 แต้ม · ถ้า ${ptsOf()-1}-${ptsOf()-1} เล่นต่อจนนำ 2 แต้ม · สูงสุด ${PTS_CAP[ptsOf()]} (${PTS_CAP[ptsOf()]}-${PTS_CAP[ptsOf()]-1}) · เล่นไม่จบ → เว้นคะแนนว่าง เลือกแค่ผู้ชนะ<br>${edit?"แก้ไขแล้วบิลของผู้เล่นและสต็อกลูกจะปรับตามอัตโนมัติ · เวลาพักไม่เปลี่ยน":`ผู้เล่นเริ่มพัก ${cfg().restMin} นาทีนับจากตอนนี้${inv.some(i=>i.shuttle||i.repair)?" · หักจากสต็อกอัตโนมัติ":""}`}${m.free?"":` · ค่าลูกใหม่ลูกละ ${unit(cfg().shuttleFee)} ฿${cfg().shuttleSplit==="shared"?" หาร 4":" ต่อคน"} — ผู้จ่าย: <b>${esc(payers)}</b>${m.orig?" (คนที่เริ่มเกม รวมคนที่ออกกลางเกม · คนที่เข้าแทนไม่จ่าย)":""}`}</p>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">${edit?"บันทึกการแก้ไข":"บันทึกผล"}</button></div></form>`,async f=>{
     let sh=checkInt(f,"shuttles",true);if(sh===false)return false;const rpr=checkInt(f,"repair",true);if(rpr===false)return false;
     if(m.free)sh=0;   // a free game uses repaired shuttles only
@@ -786,13 +918,19 @@ function dlgEnd(m,edit){
     sum.innerHTML=!r.n?"ผลเกม: <b>ไม่บันทึกผล</b>":r.winner==="draw"?`ผลเกม: <b>เสมอ</b>${r.a||r.b?` (${r.a}–${r.b})`:""}`:`ผลเกม: <b>${r.winner==="a"?"ฝั่งซ้ายชนะ":"ฝั่งขวาชนะ"}</b> (${r.a}–${r.b})`;};
   if(edit)(m.sets||[]).forEach((x,i)=>{if(f.elements["sw"+i])f.elements["sw"+i].value=x.w||"";if(f.elements["ss"+i])f.elements["ss"+i].value=x.s||"";});
   f.addEventListener("input",upd);f.addEventListener("change",upd);upd();
+  /* tell the organizer right away (when they leave the box) if a set score is not a possible final score */
+  f.addEventListener("change",e=>{const el=e.target;if(!el||!/^ss\d+$/.test(el.name||""))return;const t=el.value.trim(),sc=parseScore(t),box=el.parentElement.querySelector(".ferr");let msg="";
+    if(t&&!sc)msg=`ใส่คะแนนแบบ ${ptsOf()}-18`;else if(sc){const v=checkSetScore(sc[0],sc[1]);if(!v.ok)msg=v.msg;}
+    if(box)box.textContent=msg;el.classList.toggle("bad",!!msg);});
 }
 const parseScore=t=>{const x=/^\s*(\d{1,3})\s*[-–:]\s*(\d{1,3})\s*$/.exec(t||"");return x?[+x[1],+x[2]]:null;};
 /* read the set rows; a score like 21-18 decides an empty set, and must agree with a chosen winner */
 function readSets(f,N){const out=[];
   for(let i=0;i<N;i++){const t=fv(f,"ss"+i),sc=parseScore(t);let w=fv(f,"sw"+i);
-    if(t&&!sc)return fieldErr(f,"ss"+i,"ใส่คะแนนแบบ 21-18");
-    if(sc&&sc[0]!==sc[1]){const sw=sc[0]>sc[1]?"a":"b";if(!w)w=sw;else if(w!=="d"&&w!==sw)return fieldErr(f,"ss"+i,"คะแนนไม่ตรงกับผู้ชนะของเซต");}
+    if(t&&!sc)return fieldErr(f,"ss"+i,`ใส่คะแนนแบบ ${ptsOf()}-18`);
+    if(sc&&w==="d")return fieldErr(f,"ss"+i,"เซตเสมอไม่มีคะแนน — เว้นช่องคะแนนว่าง หรือเปลี่ยนผลเซตเป็นฝั่งที่ชนะ");
+    if(sc){const v=checkSetScore(sc[0],sc[1]);if(!v.ok)return fieldErr(f,"ss"+i,v.msg);
+      const sw=sc[0]>sc[1]?"a":"b";if(!w)w=sw;else if(w!==sw)return fieldErr(f,"ss"+i,"คะแนนไม่ตรงกับผู้ชนะของเซต");}
     out.push({w,s:sc?`${sc[0]}-${sc[1]}`:""});}
   return out;}
 function dlgSwap(m){
@@ -855,6 +993,7 @@ function dlgCfg(){
     <label class="f full">ชื่อก๊วน<input name="group" maxlength="60" value="${esc(c.group)}"></label>
     ${intIn("restMin","กฎพักขั้นต่ำ (นาที)",c.restMin,0,60)}${intIn("avgMin","เวลาเฉลี่ยต่อเกม (นาที)",c.avgMin,5,60)}
     ${intIn("setsPerGame","จำนวนเซตต่อเกม (ค่าตั้งต้น)",setsOf(null),1,9)}
+    <label class="f">คะแนนต่อเซต (กติกาสากล)<select name="pointsToWin">${Object.entries(PTS_CAP).sort((a,b)=>b[0]-a[0]).map(([t,cap])=>`<option value="${t}"${ptsOf()===+t?" selected":""}>${t} แต้ม · ดิวได้ถึง ${cap}</option>`).join("")}</select></label>
     ${intIn("noShowMin","เช็คอินได้ถึงกี่นาทีหลังเริ่ม (0 = ปิด)",c.noShowMin,0,240)}${intIn("noShowFee","ค่าปรับคนไม่มา (฿, 0 = ไม่ปรับ)",c.noShowFee,0,10000)}
     ${intIn("queueDepth","คู่ล่วงหน้าต่อคอร์ด",c.queueDepth,0,5)}
     <label class="f">จัดคู่ให้ฝีมือสมดุล<select name="balance"><option value="1" ${c.balance?"selected":""}>เปิด</option><option value="" ${!c.balance?"selected":""}>ปิด</option></select></label>
@@ -875,7 +1014,7 @@ function dlgCfg(){
     <label class="f" hidden>วิธีหารค่าใช้จ่าย<select name="split"><option value="equal" ${c.split==="equal"?"selected":""}>หารเท่ากัน</option><option value="games" ${c.split==="games"?"selected":""}>ตามจำนวนเกม</option></select></label>
     <label class="f full">ช่องทางชำระเงิน (แสดงให้ผู้เล่น)<textarea name="payInfo" maxlength="300" placeholder="เช่น พร้อมเพย์ 08x-xxx-xxxx ชื่อบัญชี ...">${esc(c.payInfo)}</textarea></label>
   </div><div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
-    const out={group:fv(f,"group")||CFG_DEF.group,balance:!!fv(f,"balance"),autoMutual:!!fv(f,"autoMutual"),autoAfterEnd:!!fv(f,"autoAfterEnd"),shuttleSplit:fv(f,"shuttleSplit")==="shared"?"shared":"each",shuttleDefault:fv(f,"shuttleDefault")==="repair"?"repair":"new",payInfo:fv(f,"payInfo")};
+    const out={group:fv(f,"group")||CFG_DEF.group,pointsToWin:PTS_CAP[+fv(f,"pointsToWin")]?+fv(f,"pointsToWin"):21,balance:!!fv(f,"balance"),autoMutual:!!fv(f,"autoMutual"),autoAfterEnd:!!fv(f,"autoAfterEnd"),shuttleSplit:fv(f,"shuttleSplit")==="shared"?"shared":"each",shuttleDefault:fv(f,"shuttleDefault")==="repair"?"repair":"new",payInfo:fv(f,"payInfo")};
     for(const k of ["restMin","avgMin","setsPerGame","noShowMin","noShowFee","queueDepth","playerCourtFee","courtRent","perCourtHour","buffer"]){const v=checkInt(f,k,true);if(v===false)return false;out[k]=v;}
     {const v=checkDec(f,"shuttleFee",true);if(v===false)return false;out.shuttleFee=v;}   // the fee players pay must be filled in (0 = free)
     for(const k of ["shuttleCost","repairCost"]){const v=checkDec(f,k,false);if(v===false)return false;out[k]=v===null?0:v;}   // blank = cost not set
@@ -1092,7 +1231,7 @@ function saveBytes(fn,data,mime){
 
 document.addEventListener("click",async e=>{
   if(APP.name!=="org")return;
-  const tb=e.target.closest("[data-tab]");if(tb){tab=tb.dataset.tab;try{localStorage.setItem("bgo-tab",tab);}catch(_){}render();return;}
+  const tb=e.target.closest("[data-tab]");if(tb){tab=tb.dataset.tab;try{localStorage.setItem(uiKey("bgo-tab"),tab);}catch(_){}render();return;}
   const b=e.target.closest("[data-act]");if(!b||b.tagName==="SELECT"||b.type==="checkbox")return;
   const a=b.dataset.act,id=b.dataset.id,s=curSession();
   const m=id?S.matches.find(x=>x.id===id):null;
@@ -1132,7 +1271,7 @@ document.addEventListener("click",async e=>{
       try{await navigator.clipboard.writeText(TT(txt));toast("คัดลอกประกาศแล้ว — วางในกลุ่มไลน์ได้เลย");}
       catch(_){openDlg(`<form novalidate><h2>ข้อความประกาศ</h2><textarea readonly style="min-height:200px">${esc(txt)}</textarea><div class="dlg-a"><button type="button" class="primary" data-close>ปิด</button></div></form>`,()=>true);}
       return;}
-    case "gotoSess":{selectSession(id);tab="money";try{localStorage.setItem("bgo-tab",tab);}catch(_){}render();window.scrollTo(0,0);return;}
+    case "gotoSess":{selectSession(id);tab="money";try{localStorage.setItem(uiKey("bgo-tab"),tab);}catch(_){}render();window.scrollTo(0,0);return;}
     case "exportBackup":return exportBackup();
     case "importBackup":return importBackup();
     case "editResult":return m&&m.status==="done"&&dlgEnd(m,true);
@@ -1148,8 +1287,11 @@ document.addEventListener("click",async e=>{
     case "memFilter":memFilter=b.dataset.k;return render();
     case "addFromMembers":return dlgAddFromMembers();
     case "memToSession":return addMembersToSession([id],false);
-    case "delMember":{const m=S.members.find(x=>x.id===id);if(!m)return;if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยันลบ";return;}
-      try{await delDoc(`members/${id}`);toast(`ลบ ${m.name} แล้ว (ชื่อในรอบเล่นเดิมยังอยู่)`);logEv("ลบสมาชิก",m.name);}catch(e){toast("ลบไม่สำเร็จ");}return;}
+    case "memClear":memSel.clear();return render();
+    case "memAddSel":{const ids=[...memSel];if(!ids.length)return;const ok=await addMembersToSession(ids,false);if(ok!==false)ids.forEach(x=>memSel.delete(x));return render();}
+    case "delMember":{const m=S.members.find(x=>x.id===id);if(!m)return;
+      if(!await askConfirm({title:"ลบสมาชิก",danger:true,ok:"ลบสมาชิก",cancel:"ยกเลิก",body:`<p>ต้องการลบสมาชิกชื่อ <b>${esc(m.name)}</b> ออกจากก๊วนใช่หรือไม่?</p><p class="small muted">ชื่อในรอบเล่นที่ผ่านมาและยอดเงินเดิมจะยังอยู่ ลบแล้วเพิ่มกลับได้ภายหลัง</p>`}))return;
+      try{await delDoc(`members/${id}`);memSel.delete(id);toast(`ลบ ${m.name} แล้ว (ชื่อในรอบเล่นเดิมยังอยู่)`);logEv("ลบสมาชิก",m.name);}catch(e){toast("ลบไม่สำเร็จ");}return;}
     case "editPlayer":{const mem=S.members.find(x=>x.id===id);if(mem)return dlgMember(mem);const p=rosterModel().find(x=>x.id===id);return p&&dlgWalkin(p);}
     case "checkin":await rosterPatch(id,{checkedInAt:now(),checkedOutAt:null},"เช็คอินแล้ว");return;
     case "checkout":{const ps=playerStats();if(ps.get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวหรือจบเกมก่อน");return;}await rosterPatch(id,{checkedOutAt:now()},"เช็คเอาท์แล้ว");return;}
@@ -1157,8 +1299,11 @@ document.addEventListener("click",async e=>{
     case "moveRound":{const p=rosterModel().find(x=>x.id===id),R=roundsOf(s);if(!p||!R)return;if(playerStats().get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวก่อน");return;}
       const to=(p.round||p.want)===2?1:2;await rosterPatch(id,{round:to},`ย้าย ${p.name} ไปรอบ ${to===2?R.start:s.start} แล้ว`);logEv("ย้ายรอบ",`${p.name} → รอบ ${to===2?R.start:s.start}`);return;}
     case "promote":await rosterPatch(id,{status:"confirmed"},"เลื่อนเป็นตัวจริงแล้ว");logEv("เลื่อนตัวสำรอง",nameOf(id));return;
-    case "removeP":{const ps=playerStats();if(ps.get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวก่อน");return;}if(!b.dataset.armed){b.dataset.armed="1";b.textContent="ยืนยัน";return;}await rosterPatch(id,{status:"removed"},"นำออกแล้ว");logEv("นำผู้เล่นออก",nameOf(id));return;}
-    case "restore":await rosterPatch(id,{status:null},"คืนรายชื่อแล้ว");return;
+    case "removeP":{const ps=playerStats();if(ps.get(id).inMatch){toast("ผู้เล่นอยู่ในแมตช์ — เปลี่ยนตัวก่อน");return;}const p=rosterModel().find(x=>x.id===id);if(!p)return;return dlgRemovePlayer(p);}
+    case "jrQueue":return jrQueue(id);
+    case "jrRemove":return dlgJoinRemove(id);
+    case "jrReopen":{if(await askConfirm({title:"กลับไปรอพิจารณา",body:"<p>ยกเลิกการนำออก แล้วให้คำขอนี้กลับไปรอพิจารณาอีกครั้งใช่หรือไม่?</p><p class=\"small muted\">ผู้เล่นจะไม่เห็นเหตุผลเดิมแล้ว</p>",ok:"กลับไปรอพิจารณา"}))try{await delDoc(`joinreq/${id}`);toast("กลับไปรอพิจารณาแล้ว");}catch(e){toast("ทำรายการไม่สำเร็จ");}return;}
+    case "restore":await rosterPatch(id,{status:null,removedReason:null,removedAt:null},"คืนรายชื่อแล้ว");return;
     case "editProfile":return dlgProfile();
     case "signup":case "signupFor":{const sid=a==="signupFor"?id:s.id;const me=selfDoc(DB.uid);if(!me||!me.name){dlgProfile();toast("ตั้งชื่อก่อนลงชื่อเล่น");return;}
       const su={...(me.signups||{})};su[sid]={at:now()};await write(`self/${DB.uid}`,{...stripId(me),signups:su},"ลงชื่อแล้ว");return;}
@@ -1228,17 +1373,23 @@ const witnessing=new Set();
 async function witness(){
   const s=curSession();if(!s||!DB.isOrg||!S.seenLoaded||s.status==="closed")return;
   const seen={};S.seen.forEach(x=>seen[x.id]=x);
-  for(const d of S.selfDocs){const su=d.signups&&d.signups[s.id];const w=seen[d.id];const key=d.id+"|"+(su&&su.at)+"|"+(su&&su.checkedInAt)+"|"+(su&&su.cancelled);
+  /* several people may appear in the same sync (the organizer's app was in the background): stamp them in the order they claim,
+     not in the order the documents happen to be listed — otherwise a later signup can get the earlier place */
+  const claimOf=d=>{const u=d.signups&&d.signups[s.id],w=seen[d.id];if(!u||u.cancelled)return 0;if(!w||w.claim!==u.at)return +u.at||0;return u.checkedInAt&&w.ci!==u.checkedInAt?+u.checkedInAt||0:0;};
+  const batch=[...S.selfDocs].sort((a,b)=>claimOf(a)-claimOf(b)||(a.id<b.id?-1:a.id>b.id?1:0));
+  let lastT=0;   // stamps in one pass must be strictly increasing: two in the same millisecond would fall back to the listing order
+  for(const d of batch){const su=d.signups&&d.signups[s.id];const w=seen[d.id];const key=d.id+"|"+(su&&su.at)+"|"+(su&&su.checkedInAt)+"|"+(su&&su.cancelled);
     if(witnessing.has(key))continue;
     if(!su||su.cancelled){if(w){witnessing.add(key);await delDoc(`sessions/${s.id}/seen/${d.id}`).catch(()=>{});}continue;}
     const needAt=!w||w.claim!==su.at, needCi=su.checkedInAt&&(!w||w.ci!==su.checkedInAt);
     if(!needAt&&!needCi)continue;
-    witnessing.add(key);const t=now();
+    witnessing.add(key);const t=Math.max(now(),lastT+1);lastT=t;
     const rec={claim:su.at,at:needAt?t:w.at,...(su.checkedInAt?{ci:su.checkedInAt,ciAt:needCi?t:w.ciAt}:{})};
     await setDoc(`sessions/${s.id}/seen/${d.id}`,rec).catch(()=>{});
   }
 }
 function orgOnData(kind,prev){
+  if(kind==="self"||kind==="joinreq")jrWatch();
   if(kind==="self"||kind==="seen")witness();
   if(kind==="decisions"||kind==="self")autoMutualCheck();
   if(kind==="self"){
@@ -1257,6 +1408,6 @@ function orgOnData(kind,prev){
   }
 }
 function startOrg(){
-  try{const t=localStorage.getItem("bgo-tab");if(t&&TABS.some(x=>x.k===t))tab=t;}catch(e){}
+  try{const t=localStorage.getItem(uiKey("bgo-tab"));if(t&&TABS.some(x=>x.k===t))tab=t;}catch(e){}
   APP.render=doRender;
 }
