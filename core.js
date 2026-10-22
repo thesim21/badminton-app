@@ -7,6 +7,8 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const pad=n=>String(n).padStart(2,"0");
 const now=()=>Date.now();
 const MIN=60000;
+/* minutes → "HH:MM" (95 → 01:35) */
+const hhmm=m=>{m=Math.max(0,Math.round(+m||0));return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");};
 /* language: dates / numbers follow the UI language; TT() turns Thai text that leaves the page (clipboard, share, picture) into the UI language */
 const LOC=()=>typeof I18N!=="undefined"?I18N.loc:"th-TH";
 const TT=s=>typeof I18N!=="undefined"?I18N.t(s):s;
@@ -140,13 +142,14 @@ function useApp(name){
 window.addEventListener("hashchange",()=>{if(PAGE()!=="index")return;const want=location.hash==="#player"||!DB.realOrg?"player":"org";if(want!==APP.name)useApp(want);});
 /* ================= state ================= */
 const S={notes:[],payqr:null,cfg:null,sessions:[],selfDocs:[],posts:[],slips:[],mod:null,inv:null,members:[],
-  sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null,joinDec:[]};
+  sid:null,roster:[],matches:[],decisions:[],pay:[],log:[],prep:null,joinDec:[],acct:[],acctMeta:null};
 const CFG_DEF={group:"ก๊วนแบดของเรา",restMin:10,avgMin:15,queueDepth:1,balance:true,autoMutual:true,perCourtHour:3,buffer:20,payInfo:"",playerCourtFee:100,shuttleFee:15,shuttleSplit:"each",courtRent:0,shuttleCost:0,repairCost:0,noShowMin:20,noShowFee:0,setsPerGame:2,pointsToWin:21,shuttleDefault:"new"};
 const cfg=()=>({...CFG_DEF,...(S.cfg||{})});
 /* text people typed themselves (names, titles, notes, posts) is never translated: the English switch only changes the app's own wording */
 if(typeof I18N!=="undefined")I18N.protect(()=>{const o=[],add=v=>{if(typeof v==="string"&&v.length<400)o.push(v);},pick=(a,ks)=>(a||[]).forEach(x=>x&&ks.forEach(k=>add(x[k])));
   pick(S.members,["name","nick","nickname","note"]);pick(S.selfDocs,["name","nick","nickname"]);pick(S.roster,["name","note","removedReason"]);pick(S.joinDec,["reason"]);(S.selfDocs||[]).forEach(d=>Object.values(d.joinReqs||{}).forEach(q=>q&&add(q.msg)));pick(S.sessions,["title","desc"]);
   pick(S.posts,["author","title","text"]);(S.posts||[]).forEach(d=>(d.comments||[]).forEach(c=>{add(c.text);add(c.author);}));pick(S.decisions,["note"]);
+  {const SYS=["เงินสด","บัญชีธนาคาร","ผู้จัด","ปรับยอดให้ตรงยอดจริง"];(S.acct||[]).forEach(x=>{if(x)["name","from","payee","who","vendor","note","memo"].forEach(k=>{const v=x[k];if(v&&!SYS.includes(v))add(v);});});}
   (S.matches||[]).forEach(m=>(m.subs||[]).forEach(x=>add(x.reason)));
   (S.notes||[]).forEach(n=>Object.values(n.bySid||{}).forEach(v=>{add(v.nm);add(v.adjReason);add(v.rejectNote);}));
   const c=S.cfg||{};if(c.group&&c.group!==CFG_DEF.group)add(c.group);add(c.payInfo);if(S.payqr)add(S.payqr.ppName);
@@ -339,19 +342,54 @@ function joinReqModel(){
   out.sort((a,b)=>a.at-b.at);
   jrMemo={a:S.selfDocs,b:S.joinDec,v:out};return out;
 }
+/* a request names a partner (same team) and up to two opponents (other team): 2, 3 or 4 people with the requester.
+   Older requests have one "to" + a type; they read as a partner or one opponent. */
+function reqParts(from,r){
+  let partner=r.partner||"",opps=Array.isArray(r.opps)?r.opps.filter(Boolean):[];
+  if(!partner&&!opps.length&&r.to){if(r.type==="partner")partner=r.to;else opps=[r.to];}
+  if(partner===from)partner="";
+  opps=[...new Set(opps)].filter(x=>x!==from&&x!==partner).slice(0,2);
+  const members=[from,...(partner?[partner]:[]),...opps];
+  return {partner,opps,members,size:members.length,to:partner||opps[0]||"",type:!opps.length?"partner":(!partner&&opps.length===1)?"opponent":"group"};
+}
+/* does this game give the request what it asked for? partner on my side, opponents on the other side */
+function reqSatisfied(r,m){
+  const A=m.a||[],B=m.b||[],side=id=>A.includes(id)?"a":B.includes(id)?"b":"";
+  const sf=side(r.from);if(!sf)return false;
+  if(r.partner&&side(r.partner)!==sf)return false;
+  return r.opps.every(o=>{const so=side(o);return !!so&&so!==sf;});
+}
+/* put a request's people into the two teams of a game (max 2 each); null when it cannot be done */
+function placeReq(T,r){
+  const other=sd=>sd==="a"?"b":"a",sideOf=id=>T.a.includes(id)?"a":T.b.includes(id)?"b":"";
+  const tryWith=sf=>{const t={a:T.a.slice(),b:T.b.slice()};
+    const put=(id,sd)=>{const cur=t.a.includes(id)?"a":t.b.includes(id)?"b":"";if(cur)return cur===sd;if(t[sd].length>=2)return false;t[sd].push(id);return true;};
+    if(!put(r.from,sf))return null;
+    if(r.partner&&!put(r.partner,sf))return null;
+    for(const o of r.opps)if(!put(o,other(sf)))return null;
+    return t;};
+  const fs=sideOf(r.from);
+  return fs?tryWith(fs):(tryWith("a")||tryWith("b"));
+}
 function requestModel(){
   const s=curSession();if(!s)return [];
   const dec={};S.decisions.forEach(d=>dec[d.id]=d);
   const out=[];
   S.selfDocs.forEach(d=>{Object.entries(d.requests||{}).forEach(([rid,r])=>{if(r.sid!==s.id)return;
-    if(!r.to||r.to===d.id)return;                                   // ignore broken / self requests
+    const p=reqParts(d.id,r);if(p.size<2)return;                      // ignore broken / self requests
     let x=dec[rid]||{};if(x.owner&&x.owner!==d.id)x={};                // a decision belongs to one requester only
-    out.push({id:rid,from:d.id,to:r.to,type:r.type,at:r.at,cancelled:!!r.cancelled,status:r.cancelled?"cancelled":(x.status||"pending"),by:x.by,handledAt:x.at,note:x.note,fulfilled:x.fulfilled||null,mutualOf:x.mutualOf||null});});});
-  S.decisions.forEach(x=>{if(x.from)out.push({id:x.id,from:x.from,to:x.to,type:x.type,at:x.createdAt,status:x.status||"pending",by:x.by,handledAt:x.at,note:x.note,fulfilled:x.fulfilled||null,byOrg:true});});
+    out.push({id:rid,from:d.id,...p,at:r.at,cancelled:!!r.cancelled,status:r.cancelled?"cancelled":(x.status||"pending"),by:x.by,handledAt:x.at,note:x.note,fulfilled:x.fulfilled||null,mutualOf:x.mutualOf||null});});});
+  S.decisions.forEach(x=>{if(!x.from)return;const p=reqParts(x.from,x);if(p.size<2)return;out.push({id:x.id,from:x.from,...p,at:x.createdAt,status:x.status||"pending",by:x.by,handledAt:x.at,note:x.note,fulfilled:x.fulfilled||null,byOrg:true});});
   // the mirror of a mutual partner request is used up together with the original (legacy "dup" marks are treated the same)
   const byId={};out.forEach(r=>byId[r.id]=r);
-  out.forEach(r=>{if(r.fulfilled==="dup"){r.fulfilled=null;const m=out.find(q=>q.from===r.to&&q.to===r.from&&q.type===r.type&&q.id!==r.id);if(m)r.mutualOf=m.id;}});
+  out.forEach(r=>{if(r.fulfilled==="dup"){r.fulfilled=null;const m=out.find(q=>q.size===2&&q.type===r.type&&q.from===r.to&&q.to===r.from&&q.id!==r.id);if(m)r.mutualOf=m.id;}});
   out.forEach(r=>{if(r.mutualOf&&!r.fulfilled){const m=byId[r.mutualOf];if(m)r.fulfilled=m.fulfilled||null;if(m&&!m.fulfilled)r.hiddenMirror=true;}});
+  // "arranged" = a game that still exists (and, while it has not started, still gives the request what it asked for)
+  const mById={};S.matches.forEach(m=>mById[m.id]=m);
+  out.forEach(r=>{const m=r.fulfilled?mById[r.fulfilled]:null;
+    const ok=!!(m&&m.status!=="cancelled"&&(m.status!=="queued"||reqSatisfied(r,m)));
+    r.match=ok?m:null;if(!ok)r.fulfilled=null;
+    r.stage=r.status==="accepted"?(r.fulfilled?"arranged":"approved"):r.status;});
   return out.sort((a,b)=>(b.at||0)-(a.at||0));
 }
 /* court timeline: ETA for queued matches and waiting players */
@@ -375,7 +413,9 @@ function generateMatches(){
   const s=curSession();if(!s)return [];
   const c=cfg(),avg=c.avgMin*MIN,t=now();
   const roster=rosterModel(),ps=playerStats();
-  const reqs=requestModel().filter(r=>r.status==="accepted"&&!r.fulfilled&&!r.hiddenMirror);
+  // approved requests that are not arranged yet: ones with a partner first, bigger groups first, then the one approved earliest
+  const reqs=requestModel().filter(r=>r.status==="accepted"&&!r.fulfilled&&!r.hiddenMirror)
+    .sort((x,y)=>(x.partner?0:1)-(y.partner?0:1)||y.size-x.size||(x.handledAt||x.at||0)-(y.handledAt||y.at||0)||(x.at||0)-(y.at||0));
   const courts=(s.courts||[]).map(name=>({name,free:t,load:0}));
   // playing games first, so a queued game on the same court is planned after them
   [...S.matches].sort((x,y)=>(x.status==="playing"?0:1)-(y.status==="playing"?0:1)).forEach(m=>{const k=courts.find(x=>x.name===m.court);if(!k)return;
@@ -397,15 +437,19 @@ function generateMatches(){
     const start=Math.max(k.free,rests[3]);
     const pool=elig.filter(p=>(ps.get(p.id).restUntil||0)<=start);
     const inPool=id=>pool.some(p=>p.id===id);
-    let a=[],b=[],reqIds=[];
-    const pr=reqs.find(r=>r.type==="partner"&&inPool(r.from)&&inPool(r.to)&&!used.has(r.from)&&!used.has(r.to));
-    if(pr){a=[pr.from,pr.to];reqIds.push(pr.id);}
-    const orq=reqs.find(r=>r.type==="opponent"&&inPool(r.from)&&inPool(r.to)&&!reqIds.includes(r.id)&&(a.length===0||(a.includes(r.from)!==a.includes(r.to))));
-    if(orq){if(a.length===0){a=[orq.from];b=[orq.to];}else{const other=a.includes(orq.from)?orq.to:orq.from;b=[other];}reqIds.push(orq.id);}
-    const fixed=new Set([...a,...b]);
-    const need=4-fixed.size;
-    // keep players of a still-unused opponent request out of this game when possible, so their request can be honoured next
-    const held=new Set();reqs.filter(r=>r.type==="opponent"&&!reqIds.includes(r.id)&&!used.has(r.from)&&!used.has(r.to)&&elig.some(p=>p.id===r.from)&&elig.some(p=>p.id===r.to)).forEach(r=>{held.add(r.from);held.add(r.to);});
+    // requests: every person in a request must be ready (and free) for it to be used; its people are placed first, the rest of the game is filled by the usual order
+    let T={a:[],b:[]};const reqIds=[];
+    const rq=reqs.filter(r=>r.members.every(id=>inPool(id)&&!used.has(id)));
+    if(rq.length){const t1=placeReq(T,rq[0]);if(t1){T=t1;reqIds.push(rq[0].id);}}
+    for(let again=true,g=0;again&&g<4;g++){again=false;
+      for(const r of rq){if(reqIds.includes(r.id))continue;
+        const placed=new Set([...T.a,...T.b]);
+        if(!r.members.some(id=>placed.has(id)))continue;         // only requests that touch the people already in this game
+        const t2=placeReq(T,r);if(t2){T=t2;reqIds.push(r.id);again=true;}}}
+    const fixed=new Set([...T.a,...T.b]);
+    const need=4-fixed.size,k1=2-T.a.length;
+    // keep the people of other approved requests out of this game when possible, so those requests can be honoured next
+    const held=new Set();reqs.filter(r=>!reqIds.includes(r.id)&&r.members.every(id=>!used.has(id)&&elig.some(p=>p.id===id))).forEach(r=>r.members.forEach(id=>held.add(id)));
     let cand=pool.filter(p=>!fixed.has(p.id)&&!held.has(p.id));
     if(cand.length<need)cand=pool.filter(p=>!fixed.has(p.id));
     cand=cand.slice(0,Math.min(8,cand.length));
@@ -415,12 +459,8 @@ function generateMatches(){
     const lastPartner=(x,y)=>ps.get(x).partners.some(p=>p.id===y);
     combos(cand.map(p=>p.id),need).forEach(pick=>{
       const prio=pick.reduce((s,id)=>s+cand.findIndex(p=>p.id===id),0);
-      const four=[...a,...b,...pick];
-      const splits=[];
-      if(a.length===2){splits.push([a,four.filter(x=>!a.includes(x))]);}
-      else if(a.length===1&&b.length===1){const rest=pick;splits.push([[a[0],rest[0]],[b[0],rest[1]]],[[a[0],rest[1]],[b[0],rest[0]]]);}
-      else{const [p,q,r,u]=four;splits.push([[p,q],[r,u]],[[p,r],[q,u]],[[p,u],[q,r]]);}
-      splits.forEach(([A,B])=>{
+      combos(pick,k1).forEach(ra=>{
+        const A=[...T.a,...ra],B=[...T.b,...pick.filter(x=>!ra.includes(x))];
         const diff=c.balance?Math.abs(A.reduce((s,x)=>s+w(x),0)-B.reduce((s,x)=>s+w(x),0)):0;
         const rep=(lastPartner(A[0],A[1])?1:0)+(lastPartner(B[0],B[1])?1:0);
         const score=prio*3+diff*4+rep*2;
@@ -429,6 +469,7 @@ function generateMatches(){
     });
     if(!best)break;
     const id=uid("m");
+    reqs.forEach(r=>{if(!reqIds.includes(r.id)&&reqSatisfied(r,{a:best.A,b:best.B}))reqIds.push(r.id);});   // e.g. the same wish asked from both sides
     const m={court:k.name,a:best.A,b:best.B,status:"queued",createdAt:t+created.length,via:"auto",reqIds,estStart:start};
     created.push({id,m});
     [...best.A,...best.B].forEach(x=>used.add(x));
@@ -445,7 +486,7 @@ const nameOf=id=>{const p=rosterModel().find(x=>x.id===id);return p?p.name:(self
 function pChip(id,ps,roster,t){const p=roster.find(x=>x.id===id)||{id,name:nameOf(id),skill:"L2",status:"confirmed",checkedIn:true};const st=statusOf(p,ps,t);return `<div class="pn">${skillChip(p.skill)}<span class="nm">${esc(p.name)}</span>${st.k==="rest"?`<span class="chip s-rest" data-until="${st.until}">${esc(st.t)}</span>`:""}</div>`;}
 
 function matchMini(m,ps,roster,t){const n=id=>{const p=roster.find(x=>x.id===id);return `${p?skillChip(p.skill):""}<span>${esc(nameOf(id))}</span>`;};
-  return `<div class="mini"><span style="color:var(--a-team)">${m.a.map(n).join(" ")}</span><span class="t">vs</span><span style="color:var(--b-team)">${m.b.map(n).join(" ")}</span>${m.free?'<span class="chip s-ready">เกมฟรี · ลูกซ่อม</span>':""}</div>`;}
+  return `<div class="mini"><span style="color:var(--a-team)">${m.a.map(n).join(" ")}</span><span class="t">vs</span><span style="color:var(--b-team)">${m.b.map(n).join(" ")}</span>${m.free?'<span class="chip s-ready">เกมฟรี · ลูกซ่อม</span>':""}${(m.reqIds||[]).length?'<span class="chip s-play">ตามคำขอ</span>':""}</div>`;}
 
 function selfService(){return DB.mode==="gh"||(DB.mode==="db"&&(DB.isOrg||!DB.viewOnly))||(DB.mode==="local"&&!DB.isOrg);}
 function myId(){return selfService()?DB.uid:(myIdentity||null);}
@@ -459,18 +500,52 @@ function sessionCard(s){
     <div class="small muted">ค่าสนาม ${baht(cfg().playerCourtFee)} ฿/คน + ค่าลูก ${unit(cfg().shuttleFee)} ฿/ลูก${cfg().shuttleSplit==="shared"?" (หาร 4 คนในเกม)":" ต่อคน"} · ลูกซ่อมไม่คิดเงิน</div></div>`;
 }
 
-function reqTable(list,org){
+/* ---- requests: how they read on screen ---- */
+const reqTypeTxt=r=>r.type==="partner"?"ขอเป็นคู่":r.type==="opponent"?"ขอเป็นคู่แข่ง":`ขอเล่นเป็นกลุ่ม ${r.size} คน`;
+const REQ_STAGE={pending:["s-warn","รอพิจารณา"],approved:["s-play","อนุมัติแล้ว · รอจัดลงแข่ง"],arranged:["s-ready","จัดให้ลงแข่งเรียบร้อยแล้ว"],rejected:["s-bad","ไม่อนุมัติ"],cancelled:["s-off","ผู้ขอยกเลิก"]};
+const reqNm=(id,viewer)=>`<b>${esc(nameOf(id))}</b>${id===viewer?' <span class="rq-me">(คุณ)</span>':""}`;
+/* the people asked, with their role when the request is a group: "B (คู่) · C, D (คู่แข่ง)" */
+function reqTargets(r,viewer){
+  const parts=[];
+  if(r.partner)parts.push(`${reqNm(r.partner,viewer)}${r.size>2?' <span class="muted">(คู่)</span>':""}`);
+  if(r.opps.length)parts.push(`${r.opps.map(id=>reqNm(id,viewer)).join(", ")}${r.size>2?' <span class="muted">(คู่แข่ง)</span>':""}`);
+  return parts.join(" · ");
+}
+/* who ends up on which side: A + B  vs  C + (random) */
+function reqTeams(r,viewer){
+  const rnd='<i class="rq-rnd">สุ่ม</i>',A=[r.from,...(r.partner?[r.partner]:[])],B=r.opps;
+  const side=(arr,open)=>[...arr.map(id=>reqNm(id,viewer)),...(open?Array(2-arr.length).fill(rnd):[])].join(" + ");
+  if(r.size===2&&r.type==="partner")return `<span class="rq-t ta">${side(A)}</span> <span class="rq-vs">เป็นคู่กัน</span>`;
+  if(r.size===2)return `<span class="rq-t ta">${reqNm(r.from,viewer)}</span> <span class="rq-vs">vs</span> <span class="rq-t tb">${reqNm(B[0],viewer)}</span>`;
+  return `<span class="rq-t ta">${side(A,true)}</span> <span class="rq-vs">vs</span> <span class="rq-t tb">${side(B,true)}</span>`;
+}
+/* plain text for toasts and the event log */
+function reqText(r){
+  const nm=nameOf;if(r.type==="partner")return `${nm(r.from)} ขอเป็นคู่กับ ${nm(r.partner)}`;
+  if(r.type==="opponent")return `${nm(r.from)} ขอเป็นคู่แข่งกับ ${nm(r.opps[0])}`;
+  return `${nm(r.from)}${r.partner?" + "+nm(r.partner):""} พบ ${r.opps.map(nm).join(" + ")}`;
+}
+/* what the game of an arranged request looks like right now */
+function reqMatchInfo(r){
+  const m=r.match;if(!m)return "";
+  const st=m.status==="queued"?"รอคิว":m.status==="playing"?"กำลังเล่น":"แข่งเสร็จแล้ว";
+  return `<div class="small muted rq-mi">คอร์ด ${esc(m.court)} · ${st}</div>`;
+}
+function reqTable(list,org,viewer){
   const roster=rosterModel(),ps=playerStats(),t=now();
-  const conflict=r=>{const msgs=[];[r.from,r.to].forEach(id=>{const p=roster.find(x=>x.id===id);if(!p){msgs.push(`${nameOf(id)} ไม่อยู่ในรายชื่อ`);return;}const st=statusOf(p,ps,t);if(st.k==="off")msgs.push(`${p.name}: ${st.t}`);if(st.k==="rest")msgs.push(`${p.name} ยังพัก`);if(st.k==="play")msgs.push(`${p.name} กำลังเล่น`);});
-    const dup=list.filter(x=>x!==r&&x.status!=="rejected"&&x.status!=="cancelled"&&x.type==="partner"&&r.type==="partner"&&(x.from===r.from||x.to===r.from||x.from===r.to||x.to===r.to)&&!(x.from===r.to&&x.to===r.from));if(dup.length)msgs.push("มีคำขอคู่ซ้อนกัน");return msgs;};
-  const sc={pending:["s-warn","รอพิจารณา"],accepted:["s-ready","อนุมัติแล้ว"],rejected:["s-bad","ปฏิเสธ"],cancelled:["s-off","ยกเลิก"]};
-  const typeTxt=r=>r.type==="partner"?"ขอเป็นคู่":"ขอเป็นคู่แข่ง";
+  const active=x=>x.stage==="pending"||x.stage==="approved";
+  const conflict=r=>{const msgs=[];r.members.forEach(id=>{const p=roster.find(x=>x.id===id);if(!p){msgs.push(`${nameOf(id)} ไม่อยู่ในรายชื่อ`);return;}const st=statusOf(p,ps,t);if(st.k==="off")msgs.push(`${p.name}: ${st.t}`);if(st.k==="rest")msgs.push(`${p.name} ยังพัก`);if(st.k==="play")msgs.push(`${p.name} กำลังเล่น`);});
+    const same=(x,y)=>x.size===y.size&&x.members.every(id=>y.members.includes(id));
+    const dup=list.filter(x=>x!==r&&active(x)&&!x.hiddenMirror&&!same(x,r)&&x.members.some(id=>r.members.includes(id)));if(dup.length)msgs.push("มีคำขอซ้อนกัน");return msgs;};
   return `<div class="tw"><table class="reqtbl"><thead><tr><th>เวลา</th><th>จาก</th><th>ประเภท</th><th>ถึง</th><th>สถานะ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>${list.map(r=>{const c=r.status==="pending"?conflict(r):[];
-    const acts=`${org&&r.status==="accepted"&&!r.fulfilled&&!r.hiddenMirror?`<button class="ghost sm" data-act="reqReject" data-id="${esc(r.id)}">เพิกถอน</button>`:""}${org&&r.status==="pending"?`<button class="primary sm" data-act="reqAccept" data-id="${esc(r.id)}">อนุมัติ</button><button class="danger sm" data-act="reqReject" data-id="${esc(r.id)}">ปฏิเสธ</button>`:""}${!org&&r.status==="pending"&&r.from===DB.uid?`<button class="ghost sm" data-act="reqCancel" data-id="${esc(r.id)}">ยกเลิก</button>`:""}`;
+    const [cls,lbl]=REQ_STAGE[r.stage]||REQ_STAGE.pending;
+    const acts=`${org&&r.stage==="approved"&&!r.hiddenMirror?`<button class="primary sm" data-act="reqArrange" data-id="${esc(r.id)}">จัดลงแข่งเลย</button><button class="ghost sm" data-act="reqReject" data-id="${esc(r.id)}">เพิกถอน</button>`:""}${org&&r.status==="pending"?`<button class="primary sm" data-act="reqAccept" data-id="${esc(r.id)}">อนุมัติ</button><button class="danger sm" data-act="reqReject" data-id="${esc(r.id)}">ไม่อนุมัติ</button>`:""}${!org&&r.status==="pending"&&r.from===DB.uid?`<button class="ghost sm" data-act="reqCancel" data-id="${esc(r.id)}">ยกเลิก</button>`:""}`;
+    const role=viewer&&viewer!==r.from?(r.partner===viewer?"คุณถูกขอให้เป็นคู่":"คุณถูกขอให้เป็นคู่แข่ง"):"";
     const note=`${c.length?`<span style="color:var(--warn)">${c.map(esc).join(" · ")}</span>`:esc(r.note||"")}${r.byOrg?' <span class="muted">(ผู้จัดบันทึก)</span>':""}`;
-    return `<tr class="${r.status==="cancelled"?"dim":""}"><td class="num small c-time">${r.at?hm(r.at):""}</td><td class="c-from">${esc(nameOf(r.from))}</td><td class="c-type">${typeTxt(r)}</td><td class="c-to">${esc(nameOf(r.to))}</td>
-      <td class="c-who"><b>${esc(nameOf(r.from))}</b> ${typeTxt(r)} <b>${esc(nameOf(r.to))}</b>${r.at?` <span class="small muted">· ${hm(r.at)}</span>`:""}</td>
-      <td class="c-st"><span class="chip ${sc[r.status][0]}">${sc[r.status][1]}</span>${r.fulfilled?' <span class="chip s-play">จัดลงแมตช์แล้ว</span>':""}</td>
+    const teams=r.size>2||viewer?`<div class="rq-teams">${reqTeams(r,viewer)}</div>`:"";
+    return `<tr class="${r.status==="cancelled"?"dim":""}"><td class="num small c-time">${r.at?hm(r.at):""}</td><td class="c-from">${reqNm(r.from,viewer)}</td><td class="c-type">${reqTypeTxt(r)}</td><td class="c-to">${reqTargets(r,viewer)}${teams}</td>
+      <td class="c-who"><b>${esc(nameOf(r.from))}</b>${r.from===viewer?' <span class="rq-me">(คุณ)</span>':""} ${reqTypeTxt(r)}${r.size===2?" "+reqTargets(r,viewer):""}${r.at?` <span class="small muted">· ${hm(r.at)}</span>`:""}${teams}${role?`<div class="small rq-role">${role}</div>`:""}</td>
+      <td class="c-st"><span class="chip ${cls}">${lbl}</span>${r.stage==="arranged"?reqMatchInfo(r):""}</td>
       <td class="small c-note">${note}</td>
       <td class="c-act">${acts?`<div class="acts">${acts}</div>`:""}</td></tr>`;}).join("")}</tbody></table></div>`;
 }
@@ -618,22 +693,38 @@ function dlgProfile(){
 const stripId=o=>{const x={...o};delete x.id;return x;};
 function dlgRequest(){
   const s=curSession();const roster=rosterModel().filter(p=>p.status!=="removed");
-  const from=DB.isOrg?"":DB.uid;
-  openDlg(`<form novalidate><h2>${DB.isOrg?"บันทึกคำขอแทนผู้เล่น":"ขอคู่ / คู่แข่ง"}</h2><div class="fg">
-    ${DB.isOrg?`<label class="f full">ผู้ขอ<select name="from"><option value="">— เลือก —</option>${roster.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select><span class="ferr"></span></label>`:""}
-    <label class="f">ประเภท<select name="type"><option value="partner">ขอเป็นคู่ (ทีมเดียวกัน)</option><option value="opponent">ขอเป็นคู่แข่ง</option></select></label>
-    <label class="f">กับ<select name="to"><option value="">— เลือก —</option>${roster.filter(p=>p.id!==from).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select><span class="ferr"></span></label>
-  </div><p class="small muted" style="margin:0">ผู้จัดเป็นผู้อนุมัติ เมื่ออนุมัติแล้วระบบจะจัดลงแมตช์ถัดไปที่ทั้งคู่พักครบ ${cfg().restMin} นาที</p>
+  const org=DB.isOrg,from0=org?"":DB.uid;
+  const opts=roster.filter(p=>p.id!==from0).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+  const none=t=>`<option value="">${t}</option>`;
+  openDlg(`<form novalidate><h2>${org?"บันทึกคำขอแทนผู้เล่น":"ขอคู่ / คู่แข่ง"}</h2><div class="fg">
+    ${org?`<label class="f full">ผู้ขอ<select name="from">${none("— เลือก —")}${roster.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select><span class="ferr"></span></label>`:""}
+    <label class="f full">${org?"คู่ของผู้ขอ (ทีมเดียวกัน)":"คู่ของฉัน (ทีมเดียวกัน)"}<select name="partner">${none("— ไม่ระบุ —")}${opts}</select><span class="ferr"></span></label>
+    <label class="f">คู่แข่งคนที่ 1<select name="opp1">${none("— ไม่ระบุ —")}${opts}</select><span class="ferr"></span></label>
+    <label class="f">คู่แข่งคนที่ 2<select name="opp2">${none("— ไม่ระบุ —")}${opts}</select><span class="ferr"></span></label>
+  </div>
+  <div class="rq-prev" id="rqPrev" aria-live="polite"></div>
+  <p class="small muted" style="margin:8px 0 0">ขอได้ 2–4 คนรวมตัวเอง — เลือกคู่ 1 คน และ/หรือคู่แข่งไม่เกิน 2 คน คนที่ไม่ได้เลือกระบบสุ่มให้ตามปกติ · ผู้จัดเป็นผู้อนุมัติ และใช้ครั้งเดียวกับเกมถัดไปที่ทุกคนพักครบ ${cfg().restMin} นาที หลังจากนั้นกลับไปจัดตามปกติ · ทุกคนที่ถูกขอจะเห็นคำขอนี้</p>
   <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">ส่งคำขอ</button></div></form>`,async f=>{
-    const fr=DB.isOrg?fv(f,"from"):DB.uid,to=fv(f,"to"),type=fv(f,"type");
-    if(DB.isOrg&&!fr)return fieldErr(f,"from","เลือกผู้ขอ");
-    if(!to)return fieldErr(f,"to","เลือกผู้เล่น");if(to===fr)return fieldErr(f,"to","เลือกคนอื่น");
-    if(requestModel().some(r=>r.from===fr&&r.to===to&&r.type===type&&(r.status==="pending"||(r.status==="accepted"&&!r.fulfilled))))return fieldErr(f,"to","มีคำขอนี้ค้างอยู่แล้ว");
-    const rid=uid("r");
-    if(DB.isOrg){const ok=await write(`sessions/${s.id}/decisions/${rid}`,{from:fr,to,type,createdAt:now(),status:"pending"},"บันทึกคำขอแล้ว");if(ok)logEv("บันทึกคำขอ",`${nameOf(fr)} → ${nameOf(to)} (${type==="partner"?"คู่":"คู่แข่ง"})`);return ok;}
-    const me=selfDoc(DB.uid)||{};const rq={...(me.requests||{})};rq[rid]={sid:s.id,to,type,at:now()};
+    const fr=org?fv(f,"from"):DB.uid;
+    if(org&&!fr)return fieldErr(f,"from","เลือกผู้ขอ");
+    const partner=fv(f,"partner"),o1=fv(f,"opp1"),o2=fv(f,"opp2");
+    if(!partner&&!o1&&!o2)return fieldErr(f,"partner","เลือกอย่างน้อย 1 คน");
+    for(const [n,v] of [["partner",partner],["opp1",o1],["opp2",o2]])if(v&&v===fr)return fieldErr(f,n,"เลือกคนอื่น");
+    if(partner&&(partner===o1||partner===o2))return fieldErr(f,partner===o1?"opp1":"opp2","เลือกคนซ้ำกัน");
+    if(o1&&o1===o2)return fieldErr(f,"opp2","เลือกคนซ้ำกัน");
+    const p=reqParts(fr,{partner,opps:[o1,o2].filter(Boolean)});
+    if(requestModel().some(r=>r.from===fr&&(r.stage==="pending"||r.stage==="approved")&&r.partner===p.partner&&r.opps.length===p.opps.length&&p.opps.every(x=>r.opps.includes(x))))return fieldErr(f,"partner","มีคำขอนี้ค้างอยู่แล้ว");
+    const rid=uid("r"),body={to:p.to,type:p.type,...(p.partner?{partner:p.partner}:{}),...(p.opps.length?{opps:p.opps}:{})};
+    if(org){const ok=await write(`sessions/${s.id}/decisions/${rid}`,{from:fr,...body,createdAt:now(),status:"pending"},"บันทึกคำขอแล้ว");if(ok)logEv("บันทึกคำขอ",reqText({from:fr,...p}));return ok;}
+    const me=selfDoc(DB.uid)||{};const rq={...(me.requests||{})};rq[rid]={sid:s.id,...body,at:now()};
     return write(`self/${DB.uid}`,{...stripId(me),requests:rq},"ส่งคำขอแล้ว — รอผู้จัดอนุมัติ");
   });
+  const f=$("#dlg form"),pv=$("#rqPrev");
+  const upd=()=>{const fr=org?fv(f,"from"):DB.uid;
+    if(!fr){pv.innerHTML='<span class="muted small">เลือกผู้ขอก่อน</span>';return;}
+    const p=reqParts(fr,{partner:fv(f,"partner"),opps:[fv(f,"opp1"),fv(f,"opp2")].filter(Boolean)});
+    pv.innerHTML=p.size<2?'<span class="muted small">เลือกอย่างน้อย 1 คน</span>':`<div class="small muted">รวม ${p.size} คน</div><div class="rq-teams">${reqTeams({from:fr,...p},DB.isOrg?"":DB.uid)}</div>`;};
+  f.addEventListener("change",upd);upd();
 }
 async function compressImage(file,maxW,q){
   const url=URL.createObjectURL(file);
@@ -691,6 +782,7 @@ function dlgComment(key){
 /* ================= subscriptions ================= */
 function selectSession(id,force){
   if(S.sid===id&&sessSubs.length&&!force)return;
+  if(S.sid&&S.sid!==id&&typeof acSnapOpen==="function")acSnapOpen(true);      // the books keep the money of the round we are leaving
   S.sid=id||null;try{localStorage.setItem(uiKey("bgo-sid"),S.sid||"");}catch(e){}
   sessSubs.forEach(u=>{try{u();}catch(e){}});sessSubs=[];
   S.roster=[];S.matches=[];S.decisions=[];S.pay=[];S.log=[];S.prep=null;S.seen=[];S.seenLoaded=false;
@@ -716,6 +808,7 @@ function startGlobal(){
   else if(DB.uid)watchDoc(`notes/${DB.uid}`,d=>{S.notes=d?[{id:DB.uid,...d}]:[];render();});
   watchCol("posts",d=>{S.posts=d;render();});
   if(DB.realOrg)watchCol("members",d=>{S.members=d;render();});
+  if(DB.realOrg){watchCol("private/acct/items",d=>{S.acct=d;render();});watchDoc("private/acct/meta/main",d=>{S.acctMeta=d;render();});}   // the club's books (sealed with the organizer password)
   if(DB.realOrg||DB.isOrg)watchCol("slips",d=>{S.slips=d;mySlipDoc=d.find(x=>x.id===DB.uid)||null;render();});
   else if(selfService())watchDoc(`slips/${DB.uid}`,d=>{mySlipDoc=d;S.slips=d?[{id:DB.uid,...d}]:[];render();});
   watchCol("sessions",d=>{const prevIds=new Set(S.sessions.map(x=>x.id));const first=!S._sessLoaded;S._sessLoaded=true;if(first&&DB.isOrg&&typeof migrateAllSessions==="function")setTimeout(()=>{migrateAllSessions();},500);
@@ -732,12 +825,17 @@ const dateDiff=iso=>{if(!iso)return 1e9;const [y,m,d]=iso.split("-").map(Number)
 
 /* ================= clock / countdowns ================= */
 let r2Fired=null;   // which round-2 start has already triggered its repaint
+let endStage=null;   // before / last 15 min / after the booked end of the open round
 function tick(){
   const t=now();
-  const ct=new Date(t).toLocaleTimeString(LOC(),{hour:"2-digit",minute:"2-digit",second:"2-digit"});document.querySelectorAll(".clockTxt").forEach(el=>el.textContent=ct);
+  const ct=new Date(t).toLocaleTimeString(LOC(),{hour:"2-digit",minute:"2-digit",second:"2-digit"});document.querySelectorAll(".clockTxt").forEach(el=>{if(el.dataset.t===ct)return;el.dataset.t=ct;el.innerHTML=[...ct].map(ch=>/\p{Nd}/u.test(ch)?`<i>${ch}</i>`:ch).join("");});   // every digit in a cell of the same width: the clock never changes width, so nothing next to it moves
   document.querySelectorAll("[data-since]").forEach(el=>el.textContent=mmss(t-+el.dataset.since));
   let expired=false;
   document.querySelectorAll("[data-until]").forEach(el=>{const u=+el.dataset.until;if(u<=t)expired=true;else el.textContent=(el.dataset.pre!=null?el.dataset.pre:"พัก ")+mmss(u-t);});   // data-pre="" = a plain countdown (rest timers get the "พัก " prefix)
+  /* "x minutes left" texts move with the clock (data-mleft = the end, as a timestamp): never up to 30 s behind it */
+  document.querySelectorAll("[data-mleft]").forEach(el=>{const u=+el.dataset.mleft;if(u<=t){expired=true;return;}const n=Math.ceil((u-t)/MIN);if(el.dataset.mn!==String(n)){el.dataset.mn=String(n);el.textContent=(el.dataset.mpre||"")+n+(el.dataset.msuf||"");}});
+  /* the banner appears 15 min before the booked end and changes at the end itself: repaint right then */
+  if(DB.isOrg){const s=curSession(),e=s&&s.status!=="closed"?sessEndEpoch(s):0;if(e){const k=s.id+"|"+(t>=e?2:t>=e-15*MIN?1:0);if(endStage!==k){endStage=k;render();}}}
   if(expired)render();
   /* the moment round 2 starts, its players join the draw: repaint right then, not up to 30 s later */
   {const s=curSession(),t2=s&&s.status!=="closed"?sessRoundStart(s,2):0;if(t2&&t>=t2&&r2Fired!==s.id+"|"+t2){r2Fired=s.id+"|"+t2;render();}}

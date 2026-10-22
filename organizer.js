@@ -8,6 +8,7 @@ const TABS=[
   {k:"members",t:"สมาชิกก๊วน",org:true},
   {k:"requests",t:"คำขอคู่/คู่แข่ง"},
   {k:"money",t:"ค่าใช้จ่าย"},
+  {k:"acct",t:"บัญชี",en:"Accounts",org:true},
   {k:"board",t:"บอร์ด"},
   {k:"stock",t:"ลูกแบด & อุปกรณ์",org:true},
   {k:"stats",t:"สถิติ & ประวัติ"},
@@ -32,12 +33,13 @@ function doRender(){
   const joinPending=DB.isOrg?joinReqModel().filter(r=>r.status==="pending").length:0;
   const tabsHtml=TABS.filter(x=>(!x.org||DB.isOrg)&&(!x.player||!DB.isOrg||true)).map(x=>{
     const b=x.k==="requests"&&DB.isOrg&&reqPending?`<span class="badge">${reqPending}</span>`:x.k==="money"&&payPending?`<span class="badge">${payPending}</span>`:x.k==="players"&&joinPending?`<span class="badge">${joinPending}</span>`:"";
-    return `<button role="tab" data-tab="${x.k}" aria-selected="${tab===x.k}">${esc(x.t)}${b}</button>`;}).join("");
+    return `<button role="tab" data-tab="${x.k}" aria-selected="${tab===x.k}">${esc(x.en&&typeof I18N!=="undefined"&&I18N.lang==="en"?x.en:x.t)}${b}</button>`;}).join("");
   const tabsEl=$("#tabs");if(tabsEl.dataset.h!==tabsHtml){tabsEl.innerHTML=tabsHtml;tabsEl.dataset.h=tabsHtml;}
   const v=$("#view");
-  const fn={members:vMembers,courts:vCourts,players:vPlayers,requests:vRequests,money:vMoney,board:vBoard,stock:vStock,stats:vStats,settings:vSettings}[tab]||vCourts;
+  const fn={members:vMembers,courts:vCourts,players:vPlayers,requests:vRequests,money:vMoney,acct:vAcct,board:vBoard,stock:vStock,stats:vStats,settings:vSettings}[tab]||vCourts;
   paint(v,(DB.mode==="gh"?GHUI.tokenBar():"")+roundBanner()+fn(),tab);
   tick();
+  acSnapOpen();
 }
 /* bar above every tab: the booked time is almost over / over → one tap to close the round */
 function roundBanner(){
@@ -46,7 +48,7 @@ function roundBanner(){
   const end=sessEndEpoch(s);if(!end)return "";
   const left=end-now(),playing=S.matches.filter(m=>m.status==="playing").length;
   if(left>15*MIN)return "";
-  if(left>0)return `<div class="endbar soon" role="status"><div><b>ใกล้ครบเวลาจอง ${esc(s.end)} น.</b><span class="small"> · อีก ${Math.ceil(left/MIN)} นาที</span></div><button data-act="closeSession">ปิดรอบเล่น…</button></div>`;
+  if(left>0)return `<div class="endbar soon" role="status"><div><b>ใกล้ครบเวลาจอง ${esc(s.end)} น.</b><span class="small" data-mleft="${end}" data-mpre=" · อีก " data-msuf=" นาที"> · อีก ${Math.ceil(left/MIN)} นาที</span></div><button data-act="closeSession">ปิดรอบเล่น…</button></div>`;
   return `<div class="endbar over" role="status"><div><b>ครบเวลาจอง ${esc(s.end)} น. แล้ว</b><span class="small">${playing?` · ยังมีเกมเล่นอยู่ ${playing} คอร์ด`:" · ปิดรอบเพื่อสรุปยอดและเก็บเงิน"}</span></div><button class="primary" data-act="closeSession">ปิดรอบเล่น</button></div>`;
 }
 function noSession(){
@@ -271,9 +273,12 @@ function vCourts(){
     <div class="kpi"><span class="k">เช็คอินแล้ว</span><span class="v">${present.length}</span><span class="s">จากผู้ลงชื่อ ${roster.filter(p=>p.status==="confirmed").length} คน</span></div>
     <div class="kpi"><span class="k">กำลังเล่น</span><span class="v">${playing.length}/${(s.courts||[]).length}</span><span class="s">คอร์ด</span></div>
     <div class="kpi"><span class="k">พร้อมลงเล่น</span><span class="v">${ready.length}</span><span class="s">พักอยู่ ${resting.length} คน (กฎพัก ${c.restMin} นาที)</span></div>
-    <div class="kpi ${requestModel().filter(r=>r.status==="pending").length&&DB.isOrg?"alert":""}"><span class="k">คำขอรอพิจารณา</span><span class="v">${requestModel().filter(r=>r.status==="pending").length}</span><span class="s">คู่/คู่แข่ง</span></div>
+    <div class="kpi ${requestModel().filter(r=>r.status==="pending").length&&DB.isOrg?"alert":""}"><span class="k">คำขอรอพิจารณา</span><span class="v">${requestModel().filter(r=>r.status==="pending").length}</span><span class="s">คู่/คู่แข่ง${requestModel().some(r=>r.stage==="approved"&&!r.hiddenMirror)?` · อนุมัติแล้วรอจัด ${requestModel().filter(r=>r.stage==="approved"&&!r.hiddenMirror).length}`:""}</span></div>
   </section>`;
   if(s.status==="closed")h+=`<div class="notice warn">รอบเล่นนี้ปิดแล้ว — ดูผลได้อย่างเดียว</div>`;
+  {const wait=requestModel().filter(r=>r.stage==="approved"&&!r.hiddenMirror);
+   if(wait.length)h+=`<section class="panel reqwait"><div class="ph"><h2>คำขอที่อนุมัติแล้ว — รอจัดลงแข่ง</h2><span class="chip s-play">${wait.length}</span><span class="muted small">ใช้ครั้งเดียวกับเกมถัดไป · จัดอัตโนมัติจะวางให้เอง หรือกด “จัดลงแข่งเลย”</span></div>
+    <div class="rqlist">${wait.map(r=>`<div class="rqrow"><div class="rq-teams">${reqTeams(r,"")}</div>${DB.isOrg&&s.status!=="closed"?`<button class="primary sm" data-act="reqArrange" data-id="${esc(r.id)}">จัดลงแข่งเลย</button>`:""}</div>`).join("")}</div></section>`;}
   h+=`<section class="panel"><div class="ph"><h2>คอร์ด</h2><span class="muted small">${esc(fmtD(s.date))} ${esc(s.start||"")}–${esc(s.end||"")} · เกมละ ~${c.avgMin} นาที</span><span class="sp"></span>
     ${DB.isOrg&&s.status!=="closed"?`<button class="primary" data-act="autoMatch">จัดคู่อัตโนมัติ</button><button data-act="manualMatch">จัดคู่เอง</button><button class="ghost" data-act="closeSession">ปิดรอบ</button>`:""}</div>
     <div class="courts">${(s.courts||[]).map(cn=>{
@@ -410,14 +415,17 @@ function jrWatch(){
 /* ---------- requests ---------- */
 function vRequests(){
   const s=curSession();if(!s)return noSession();
-  const all=requestModel();
-  const pend=all.filter(r=>r.status==="pending");
-  let h=`<section class="panel"><div class="ph"><h2>คำขอที่รอพิจารณา</h2><span class="muted small">ลำดับความสำคัญในการจับคู่: ขอเป็นคู่ → ขอเป็นคู่แข่ง → คิวปกติ</span><span class="sp"></span>
-    ${DB.isOrg?`<button data-act="newRequest">+ บันทึกคำขอแทนผู้เล่น</button>`:(selfService()&&selfDoc(DB.uid)?`<button data-act="newRequest">+ ขอคู่ / คู่แข่ง</button>`:"")}</div>
+  const all=requestModel(),org=DB.isOrg;
+  const pend=all.filter(r=>r.stage==="pending"),wait=all.filter(r=>r.stage==="approved"&&!r.hiddenMirror),done=all.filter(r=>r.stage==="arranged"&&!r.hiddenMirror),
+    no=all.filter(r=>r.stage==="rejected"||r.stage==="cancelled");
+  const panel=(title,list,empty,sub)=>`<section class="panel"><div class="ph"><h2>${title}</h2><span class="chip s-off">${list.length}</span>${sub?`<span class="muted small">${sub}</span>`:""}</div>${list.length?reqTable(list,org):`<div class="empty">${empty}</div>`}</section>`;
+  return `<section class="panel"><div class="ph"><h2>คำขอที่รอพิจารณา</h2><span class="chip s-warn">${pend.length}</span><span class="muted small">ขอได้ 2–4 คน (คู่ + คู่แข่ง) · ลำดับจับคู่: มีคู่ก่อน → กลุ่มใหญ่ก่อน → ตามเวลาที่อนุมัติ → คิวปกติ</span><span class="sp"></span>
+    ${org?`<button data-act="newRequest">+ บันทึกคำขอแทนผู้เล่น</button>`:(selfService()&&selfDoc(DB.uid)?`<button data-act="newRequest">+ ขอคู่ / คู่แข่ง</button>`:"")}</div>
     ${cfg().autoMutual?`<div class="small muted" style="margin-bottom:8px">ถ้าสองคนขอเป็นคู่กันเอง ระบบอนุมัติให้อัตโนมัติ</div>`:""}
-    ${pend.length?reqTable(pend,DB.isOrg):`<div class="empty">ไม่มีคำขอค้าง</div>`}</section>
-    <section class="panel"><div class="ph"><h2>ประวัติคำขอ</h2></div>${all.filter(r=>r.status!=="pending").length?reqTable(all.filter(r=>r.status!=="pending"),DB.isOrg):`<div class="empty">ยังไม่มี</div>`}</section>`;
-  return h;
+    ${pend.length?reqTable(pend,org):`<div class="empty">ไม่มีคำขอค้าง</div>`}</section>`
+    +panel("อนุมัติแล้ว — รอจัดลงแข่ง",wait,"ไม่มี","ใช้ครั้งเดียวกับเกมถัดไปที่ทุกคนพักครบ แล้วกลับไปจัดตามปกติ")
+    +panel("จัดให้ลงแข่งเรียบร้อยแล้ว",done,"ยังไม่มี")
+    +panel("ไม่อนุมัติ / ยกเลิก",no,"ยังไม่มี");
 }
 
 /* ---------- QR for the group ---------- */
@@ -490,11 +498,12 @@ function debtLedger(){
 /* write the debts of the CURRENT closed round into the players' notes (only when something changed) */
 async function syncDebts(){
   const s=curSession();if(!s||s.status!=="closed"||!DB.isOrg)return;
-  const pm=payModel();
+  const pm=payModel(),ros=rosterModel();
   for(const r of pm.rows){
     const nt=((S.notes.find(x=>x.id===r.id)||{}).bySid||{})[s.id]||{},owe=Math.round(r.owe*100)/100;
-    if(owe>0&&(+nt.owe!==owe||+nt.due!==r.due||nt.nm!==r.name))await setNote(r.id,s.id,{owe,due:r.due,nm:r.name,debtAt:now()});
-    else if(owe<=0&&nt.owe)await setNote(r.id,s.id,{owe:"",due:"",nm:"",debtAt:""});
+    const p=ros.find(x=>x.id===r.id)||{},k=p.walkin&&!p.member?"g":"m",base=r.courtPart+r.shuttlePart+r.noShowPart,fs=base>0?Math.round(r.shuttlePart/base*10000)/10000:0,fn=base>0?Math.round(r.noShowPart/base*10000)/10000:0;
+    if(owe>0&&(+nt.owe!==owe||+nt.due!==r.due||nt.nm!==r.name||nt.k!==k||(+nt.fs||0)!==fs||(+nt.fn||0)!==fn))await setNote(r.id,s.id,{owe,due:r.due,nm:r.name,k,fs,fn,debtAt:now()});
+    else if(owe<=0&&nt.owe)await setNote(r.id,s.id,{owe:"",due:"",nm:"",k:"",fs:"",fn:"",debtAt:""});
   }
 }
 const debtSig={};let debtTimer=null;
@@ -515,7 +524,10 @@ async function receiveDebt(e,amount,method){
   if(!ok)return false;
   await setNote(e.pid,e.sid,left?{owe:left}:{owe:"",due:"",nm:"",debtAt:""});
   const ss=S.sessions.find(q=>q.id===e.sid);
-  if(ss&&ss.summary)await write(`sessions/${ss.id}`,{...stripId(ss),summary:{...ss.summary,owed:Math.max(0,Math.round(((+ss.summary.owed||0)-add)*100)/100)}});
+  if(ss&&ss.summary){const sm={...ss.summary,owed:Math.max(0,Math.round(((+ss.summary.owed||0)-add)*100)/100)};
+    if(Array.isArray(sm.rc)||(acOn()&&(ss.date||"")<(S.acctMeta.start||""))){const nt=((S.notes.find(x=>x.id===e.pid)||{}).bySid||{})[e.sid]||{},fs=+nt.fs||0,fn=+nt.fn||0,s_=Math.round(add*fs*100)/100,n_=Math.round(add*fn*100)/100;
+      sm.rc=[...(Array.isArray(sm.rc)?sm.rc:[]),{d:acToday(),m:method==="transfer"?"transfer":"cash",k:nt.k==="g"?"g":"m",c:Math.round((add-s_-n_)*100)/100,s:s_,n:n_,late:1}];}
+    await write(`sessions/${ss.id}`,{...stripId(ss),summary:sm});}
   logEv("รับเงินค้างรอบก่อน",`${e.name} · ${fmtD(e.date)} · ${METHOD_TH[method==="transfer"?"transfer":"cash"]} ${add} ฿${left?` (ค้างอีก ${left})`:" (ครบ)"}`);
   return true;
 }
@@ -596,10 +608,10 @@ function vMoney(){
 }
 
 /* ---------- per-round summary (frozen on the session when it closes) + monthly report ---------- */
-const SUM_KEYS=["revenue","cost","profit","players","games","shuttles","repair","owed"];
+const SUM_KEYS=["revenue","cost","profit","players","games","shuttles","repair","owed"];   // + rc (the receipts of the round, for the books) compared as JSON
 function sessionSummary(){const pm=payModel(),P=pm.pnl;
   const r2=n=>Math.round((+n||0)*100)/100;
-  return {revenue:r2(P.revenue),cost:r2(P.cost),profit:r2(P.profit),players:pm.rows.length,games:S.matches.filter(m=>m.status==="done").length,shuttles:pm.shuttles,repair:pm.repair,owed:pm.rows.reduce((a,r)=>a+r.owe,0)};}
+  return {revenue:r2(P.revenue),cost:r2(P.cost),profit:r2(P.profit),players:pm.rows.length,games:S.matches.filter(m=>m.status==="done").length,shuttles:pm.shuttles,repair:pm.repair,owed:pm.rows.reduce((a,r)=>a+r.owe,0),rc:acReceiptsOfPay(pm,rosterModel(),(curSession()||{}).date||acToday())};}
 let sumTimer=null;
 /* write (or correct) the summary of the CURRENT closed round once the data has settled; safe to call repeatedly */
 function refreshSummary(tries=0){
@@ -608,7 +620,7 @@ function refreshSummary(tries=0){
     const s=curSession();if(!s||s.id!==sid||!DB.isOrg)return;
     if(s.status!=="closed"||S.matches.some(m=>m.status==="playing"||m.status==="queued")){if(tries<6)refreshSummary(tries+1);return;}
     const sm=sessionSummary(),o=s.summary||{};
-    if(SUM_KEYS.every(k=>o[k]===sm[k])){await syncDebts();return;}
+    if(SUM_KEYS.every(k=>o[k]===sm[k])&&JSON.stringify(o.rc||null)===JSON.stringify(sm.rc)){await syncDebts();return;}
     await write(`sessions/${s.id}`,{...stripId(s),summary:{...sm,at:now()}});
     await syncDebts();
   },tries?900:1300);
@@ -672,11 +684,710 @@ function vStats(){
   const done=S.matches.filter(m=>m.status==="done").sort((a,b)=>(b.endAt||0)-(a.endAt||0));
   const avgLen=done.length?Math.round(done.reduce((a,m)=>a+((m.endAt-m.startAt)/MIN),0)/done.length):0;
   let h=`<section class="kpis"><div class="kpi"><span class="k">เกมที่จบแล้ว</span><span class="v">${done.length}</span></div><div class="kpi"><span class="k">เวลาเฉลี่ยต่อเกม</span><span class="v">${avgLen}</span><span class="s">นาที (ตั้งไว้ ${cfg().avgMin})</span></div><div class="kpi"><span class="k">ผู้เล่นที่ได้ลง</span><span class="v">${rows.length}</span></div></section>
-  <div class="grid2"><section class="panel"><div class="ph"><h2>ตารางผู้เล่นรอบนี้</h2></div>${rows.length?`<div class="tw"><table><thead><tr><th>ผู้เล่น</th><th class="n">เกม</th><th class="n">ชนะ</th><th class="n">แพ้</th><th class="n">เสมอ</th><th class="n">นาทีที่เล่น</th></tr></thead><tbody>${rows.map(({p,x})=>`<tr><td><div class="pn">${skillChip(p.skill)}<span>${esc(p.name)}</span></div></td><td class="n">${x.games}</td><td class="n">${x.wins}</td><td class="n">${x.losses}</td><td class="n">${x.draws}</td><td class="n">${x.minutes}</td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีเกมที่จบ</div>`}</section>
+  <div class="grid2"><section class="panel"><div class="ph"><h2>ตารางผู้เล่นรอบนี้</h2></div>${rows.length?`<div class="tw"><table><thead><tr><th>ผู้เล่น</th><th class="n">เกม</th><th class="n">ชนะ</th><th class="n">แพ้</th><th class="n">เสมอ</th><th class="n">เวลาที่เล่น</th></tr></thead><tbody>${rows.map(({p,x})=>`<tr><td><div class="pn">${skillChip(p.skill)}<span>${esc(p.name)}</span></div></td><td class="n">${x.games}</td><td class="n">${x.wins}</td><td class="n">${x.losses}</td><td class="n">${x.draws}</td><td class="n num" title="${x.minutes} นาที">${hhmm(x.minutes)}</td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">ยังไม่มีเกมที่จบ</div>`}</section>
   <section class="panel"><div class="ph"><h2>ผลการแข่งขัน</h2></div>${done.length?`<div class="qlist">${done.map(m=>`<div class="qcard"><span class="ord small">${hm(m.endAt)}</span><div style="min-width:0">${matchMini(m,ps,roster)}<div class="small muted">คอร์ด ${esc(m.court)} · ${Math.round((m.endAt-m.startAt)/MIN)} นาที${m.score?" · "+esc(m.score):""} · ลูกใหม่ ${m.shuttles||0}${m.repair?` · ลูกซ่อม ${m.repair}`:""}${(m.subs||[]).some(x=>x.live)?` · เปลี่ยนตัว ${esc(m.subs.filter(x=>x.live).map(x=>nameOf(x.out)+"→"+nameOf(x.in)).join(", "))}`:""}</div>${DB.isOrg?`<button class="ghost sm" style="margin-top:6px;white-space:nowrap" data-act="editResult" data-id="${esc(m.id)}" aria-label="แก้ไขผลเกมและจำนวนลูก คอร์ด ${esc(m.court)}">แก้ไขผลเกม</button>`:""}</div><span class="chip ${resultCls(m)}">${esc(resultText(m))}</span></div>`).join("")}</div>`:`<div class="empty">ยังไม่มี</div>`}</section></div>
   ${DB.isOrg?`<section class="panel"><div class="ph"><h2>บันทึกเหตุการณ์ (Event log)</h2><span class="muted small">ทุกการ override / swap / อนุมัติ / ปรับยอด บันทึกพร้อมผู้ทำและเหตุผล</span></div>${S.log.length?`<div class="loglist">${S.log.slice().sort((a,b)=>b.at-a.at).map(l=>`<div><span class="num muted">${hm(l.at)}</span><span><b>${esc(l.action)}</b> ${esc(l.detail)} <span class="muted">— ${esc(l.by)}</span></span></div>`).join("")}</div>`:`<div class="empty">ยังไม่มีเหตุการณ์</div>`}</section>`:""}`;
   return h;
 }
+
+/* ===== ACCOUNTS BEGIN (generated from /home/claude/bad/acct/*.js — edit there) ===== */
+/* ================= บัญชี (accounts) =================
+   Income, expenses, profit & loss, cash & bank, receivables, payables, funds and reconciliation.
+   The books live in the sealed private/ area: one document per item under private/acct/items + one settings document.
+   Money players pay for a round is NOT typed in again: it is read from the receipts of the round (open round: live; closed round: the receipts
+   frozen in its summary) and split into member / walk-in and court / shuttle / no-show parts.
+   Basis: money actually received and paid (cash basis). Unpaid player balances and unpaid bills are shown beside it (receivables / payables). */
+const acYmd=t=>{const d=t instanceof Date?t:new Date(t);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
+const acR=n=>Math.round((+n||0)*100)/100;
+/* money with satang only when there are some; negative with a real minus sign */
+const acM=n=>{n=acR(n);return (n<0?"−":"")+Math.abs(n).toLocaleString(LOC(),{minimumFractionDigits:Number.isInteger(n)?0:2,maximumFractionDigits:2});};
+const acSgn=n=>n>0?"+"+acM(n):acM(n);
+const acTone=n=>n>0?"var(--ready)":n<0?"var(--bad)":"var(--muted)";
+const AC_EXP=[["rent","ค่าเช่าสนาม"],["shuttle","ค่าลูกแบดมินตัน"],["water","ค่าน้ำดื่ม"],["equip","ค่าอุปกรณ์ส่วนกลาง"],["other","ค่าใช้จ่ายอื่น ๆ ของก๊วน"]];
+const AC_INC_MAN=[["sponsor","เงินสนับสนุน / สปอนเซอร์"],["shuttleSale","ขายลูกแบดให้สมาชิก"],["other","รายรับอื่น ๆ"]];
+const AC_INC_NAME={member:"ค่าลงสนามจากสมาชิก",guest:"ค่าสนามจากผู้เล่น Walk-in / ผู้เล่นรับเชิญ",sponsor:"เงินสนับสนุน / สปอนเซอร์",shuttleFee:"ค่าลูกแบดที่เก็บจากผู้เล่นในเกม",shuttleSale:"ขายลูกแบดให้สมาชิก",noshow:"ค่าปรับคนไม่มา",other:"รายรับอื่น ๆ",adjIn:"ปรับปรุงยอด (เงินเกิน)"};
+const AC_EXP_NAME={rent:"ค่าเช่าสนาม",shuttle:"ค่าลูกแบดมินตัน",water:"ค่าน้ำดื่ม",equip:"ค่าอุปกรณ์ส่วนกลาง",other:"ค่าใช้จ่ายอื่น ๆ ของก๊วน",adjOut:"ปรับปรุงยอด (เงินขาด)"};
+const AC_KIND={cash:"เงินสด",bank:"ธนาคาร",wallet:"e-Wallet"};
+const acOn=()=>!!(S.acctMeta&&S.acctMeta.start);
+const acToday=()=>acYmd(now());
+const acItems=t=>(S.acct||[]).filter(x=>x.t===t);
+const acAccounts=()=>acItems("acc").sort((a,b)=>(a.order||0)-(b.order||0)||(a.name||"").localeCompare(b.name||"","th"));
+
+/* ---- what players paid, as receipts: {d,m,k,c,s,n}  (day, cash|transfer, m|g = member|walk-in guest, court / shuttle / no-show part) ---- */
+function acReceiptsOfPay(pm,roster,dateFallback){
+  const map=new Map();
+  pm.rows.forEach(r=>{
+    const p=roster.find(x=>x.id===r.id)||{};const k=p.walkin&&!p.member?"g":"m";
+    const base=r.courtPart+r.shuttlePart+r.noShowPart;
+    const split=a=>{if(base<=0)return {c:acR(a),s:0,n:0};const c=acR(a*r.courtPart/base),n=acR(a*r.noShowPart/base);return {c,n,s:acR(a-c-n)};};
+    const ov=r.ov||{},at0=+ov.at||0;
+    const rc=(r.recs||[]).map(x=>({t:+x.at||at0,m:x.m==="transfer"?"transfer":"cash",a:+x.a||0}));
+    const sc=rc.filter(x=>x.m==="cash").reduce((a,x)=>a+x.a,0),st=rc.filter(x=>x.m==="transfer").reduce((a,x)=>a+x.a,0);
+    if(r.cashAmt-sc>0.004)rc.push({t:at0,m:"cash",a:r.cashAmt-sc});             // older bills without receipts
+    if(r.transAmt-st>0.004)rc.push({t:at0,m:"transfer",a:r.transAmt-st});
+    rc.forEach(x=>{if(!(x.a>0))return;let d=x.t?acYmd(x.t):dateFallback;
+      if(x.t&&d!==dateFallback&&acYmd(x.t-6*3600000)===dateFallback)d=dateFallback;      // paid after midnight at the end of the evening: still that evening
+      const key=d+"|"+x.m+"|"+k;
+      const sp=split(x.a),cur=map.get(key)||{d,m:x.m,k,c:0,s:0,n:0};cur.c=acR(cur.c+sp.c);cur.s=acR(cur.s+sp.s);cur.n=acR(cur.n+sp.n);map.set(key,cur);});
+  });
+  return [...map.values()].sort((a,b)=>a.d.localeCompare(b.d)||a.m.localeCompare(b.m)||a.k.localeCompare(b.k));
+}
+/* the receipts of a round that is not the open one: frozen in its summary (a summary from before the books existed counts what was collected as cash from members) */
+function acRcOf(ss){
+  const sm=ss&&ss.summary;
+  if(sm&&Array.isArray(sm.rc))return sm.rc;
+  if(ss&&Array.isArray(ss.acRc))return ss.acRc;           // kept on the round while it was open (so the books keep it after the organizer moves to another round)
+  if(!sm)return null;
+  if(ss.status!=="closed")return null;
+  const got=Math.max(0,acR((+sm.revenue||0)-(+sm.owed||0)));
+  return got>0?[{d:ss.date,m:"cash",k:"m",c:got,s:0,n:0,legacy:1}]:[];
+}
+function acReceipts(){
+  const start=(S.acctMeta||{}).start||"",out=[];
+  S.sessions.forEach(s=>{
+    if(!s.date)return;
+    const pre=s.date<start;                                   // a round before the books started: only what is received AFTER the start counts
+    const list=s.id===S.sid&&!pre?acReceiptsOfPay(payModel(),rosterModel(),s.date):acRcOf(s);
+    (list||[]).forEach(x=>{if(x.d>=start&&(!pre||x.late))out.push({...x,sid:s.id,title:s.title||"รอบเล่น"});});
+  });
+  return out;
+}
+
+/* ---- the book: every income line, expense line and movement of money in an account ---- */
+function acBook(){
+  const meta=S.acctMeta||{},items=S.acct||[],accs=acAccounts();
+  const maps=(Array.isArray(meta.maps)&&meta.maps.length?meta.maps:[{from:meta.start||"",cash:"",transfer:""}]).slice().sort((a,b)=>a.from.localeCompare(b.from));
+  const accFor=(m,d)=>{let mp=maps[0];maps.forEach(x=>{if(x.from<=d)mp=x;});const want=m==="transfer"?mp.transfer:mp.cash;
+    if(accs.some(a=>a.id===want))return want;return ((accs.find(a=>a.kind===(m==="transfer"?"bank":"cash"))||accs[0]||{}).id)||"";};
+  const inc=[],exp=[],moves=[];
+  acReceipts().forEach(x=>{const acct=accFor(x.m,x.d),tot=acR(x.c+x.s+x.n);
+    const add=(cat,amt)=>{if(amt>0)inc.push({id:`rc|${x.sid}|${x.d}|${x.m}|${x.k}|${cat}`,d:x.d,cat,amt:acR(amt),acct,auto:true,sid:x.sid,label:x.title,m:x.m});};
+    add(x.k==="g"?"guest":"member",x.c);add("shuttleFee",x.s);add("noshow",x.n);
+    if(tot>0)moves.push({d:x.d,acct,amt:tot,kind:"rc",label:x.title,auto:true,sid:x.sid});});
+  items.forEach(e=>{
+    const a=acR(e.amount);
+    if(e.t==="inc"){inc.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:e.acct,label:e.memo||"",from:e.from||"",e});moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:a,kind:"inc",label:e.memo||AC_INC_NAME[e.cat]||"",id:e.id});}
+    else if(e.t==="exp"){exp.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:e.acct,label:e.memo||"",payee:e.payee||"",fund:e.fund||"",billId:e.billId||"",ref:e.ref||"",e});moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:-a,kind:"exp",label:e.memo||AC_EXP_NAME[e.cat]||"",id:e.id});}
+    else if(e.t==="adv"){exp.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:"",adv:true,label:e.memo||"",payee:e.payee||"",ref:e.ref||"",who:e.who||"",e});}
+    else if(e.t==="rbs"){moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:-a,kind:"rbs",label:e.memo||"คืนเงินที่ผู้จัดสำรองจ่าย",id:e.id});}
+    else if(e.t==="trf"){moves.push({at:+e.at||0,d:e.date,acct:e.from,amt:-a,kind:"trf",label:e.memo||"โอนระหว่างบัญชี",id:e.id,peer:e.to},{at:+e.at||0,d:e.date,acct:e.to,amt:a,kind:"trf",label:e.memo||"โอนระหว่างบัญชี",id:e.id,peer:e.from});}
+    else if(e.t==="adj"){const v=acR(e.amount);moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:v,kind:"adj",label:e.memo||"ปรับยอดให้ตรงยอดจริง",id:e.id});
+      if(v>0)inc.push({id:e.id,d:e.date,cat:"adjIn",amt:v,acct:e.acct,label:e.memo||"",e});else if(v<0)exp.push({id:e.id,d:e.date,cat:"adjOut",amt:-v,acct:e.acct,label:e.memo||"",e});}
+  });
+  const cmp=(x,y)=>x.d.localeCompare(y.d);inc.sort(cmp);exp.sort(cmp);moves.sort(cmp);
+  return {accs,meta,inc,exp,moves};
+}
+/* book balance of an account at the end of a day (null = today and later) */
+function acBal(book,accId,upTo){
+  const a=book.accs.find(x=>x.id===accId);if(!a)return 0;upTo=upTo||"9999-12-31";
+  let v=(a.openDate||"")<=upTo?acR(a.opening):0;book.moves.forEach(m=>{if(m.acct===accId&&m.d<=upTo)v+=m.amt;});return acR(v);
+}
+const acBalAll=(book,upTo)=>acR(book.accs.reduce((a,x)=>a+acBal(book,x.id,upTo),0));
+/* money that came in / went out of one account during [from,to] (the account's own opening counts as "in" when it is opened inside the period) */
+function acFlow(book,accId,from,to){
+  const a=book.accs.find(x=>x.id===accId);if(!a)return {open:0,inn:0,out:0,close:0,opened:0};
+  let inn=0,out=0,opened=0,trIn=0,trOut=0;
+  if((a.openDate||"")>=from&&(a.openDate||"")<=to)opened=acR(a.opening);
+  book.moves.forEach(m=>{if(m.acct!==accId||m.d<from||m.d>to)return;if(m.amt>=0){inn+=m.amt;if(m.kind==="trf")trIn+=m.amt;}else{out-=m.amt;if(m.kind==="trf")trOut-=m.amt;}});
+  const prev=new Date(from+"T00:00:00");prev.setDate(prev.getDate()-1);
+  const open=acBal(book,accId,acYmd(prev));
+  return {open,opened,inn:acR(inn),out:acR(out),trIn:acR(trIn),trOut:acR(trOut),close:acBal(book,accId,to)};
+}
+/* entries written AFTER a count was recorded (but dated on or before the count day): they may explain a difference, or may be later spending */
+function acAfterCount(book,c){let n=0,sum=0;book.moves.forEach(m=>{if(m.acct===c.acct&&m.d<=c.date&&m.id&&m.at>(+c.at||0)&&m.kind!=="adj"){n++;sum+=m.amt;}});return {n,sum:acR(sum)};}
+/* what the books say about [from,to]: income and expenses by category, net */
+function acPnl(book,from,to){
+  const inc={},exp={};let ti=0,te=0;
+  book.inc.forEach(x=>{if(x.d<from||x.d>to)return;inc[x.cat]=acR((inc[x.cat]||0)+x.amt);ti+=x.amt;});
+  book.exp.forEach(x=>{if(x.d<from||x.d>to)return;exp[x.cat]=acR((exp[x.cat]||0)+x.amt);te+=x.amt;});
+  return {inc,exp,ti:acR(ti),te:acR(te),net:acR(ti-te)};
+}
+/* receivables: players who played but have not paid (open round live + closed rounds' notes) and what the organizer paid for the club and has not got back */
+function acReceivables(){
+  const start=(S.acctMeta||{}).start||"",players=[],s=curSession();
+  if(s&&(s.date||"")>=start)payModel().rows.forEach(r=>{if(r.owe>0&&r.due>0)players.push({live:true,pid:r.id,name:r.name,sid:s.id,date:s.date,title:s.title||"รอบเล่น",due:r.due,owe:acR(r.owe),state:r.state,open:s.status!=="closed"});});
+  S.sessions.forEach(q=>{if(q.id===S.sid||q.status==="closed"||(q.date||"")<start||!Array.isArray(q.acOw))return;    // an open round we are not looking at: what its players owed when we left it
+    q.acOw.forEach(r=>players.push({pid:r.pid,name:r.name,sid:q.id,date:q.date,title:q.title||"รอบเล่น",due:r.due,owe:acR(r.owe),state:r.state,open:true,snap:true}));});
+  debtLedger().forEach(e=>{if(e.sid===S.sid||(e.date||"")<start)return;players.push({pid:e.pid,name:e.name,sid:e.sid,date:e.date,title:e.title,due:e.due,owe:acR(e.owe),entry:e});});
+  const repaid={};acItems("rbs").forEach(r=>{repaid[r.advId]=acR((repaid[r.advId]||0)+(+r.amount||0));});
+  const adv=acItems("adv").map(a=>({...a,left:acR((+a.amount||0)-(repaid[a.id]||0))})).filter(a=>a.left>0.004).sort((a,b)=>a.date.localeCompare(b.date));
+  return {players,adv,playersTotal:acR(players.reduce((a,x)=>a+x.owe,0)),advTotal:acR(adv.reduce((a,x)=>a+x.left,0))};
+}
+/* payables: bills not (fully) paid */
+function acPayables(){
+  const paid={};acItems("exp").forEach(e=>{if(e.billId)paid[e.billId]=acR((paid[e.billId]||0)+(+e.amount||0));});
+  const bills=acItems("bill").map(b=>({...b,paid:acR(paid[b.id]||0),left:acR((+b.amount||0)-(paid[b.id]||0))})).sort((a,b)=>(a.due||a.date).localeCompare(b.due||b.date));
+  const open=bills.filter(b=>b.left>0.004);
+  return {bills,open,total:acR(open.reduce((a,b)=>a+b.left,0))};
+}
+/* funds: money set aside for later; what is left in each = set-asides − releases − expenses paid from it */
+function acFunds(book){
+  return acItems("fund").sort((a,b)=>(a.order||0)-(b.order||0)||a.name.localeCompare(b.name,"th")).map(f=>{
+    const put=acItems("fnd").filter(x=>x.fund===f.id).reduce((a,x)=>a+(+x.amount||0),0);
+    const spent=book.exp.filter(x=>x.fund===f.id).reduce((a,x)=>a+x.amt,0);
+    return {...f,bal:acR(put-spent),spent:acR(spent)};});
+}
+/* round rent that nobody has written in the books yet (from the round's own settings) */
+function acRentTodo(){
+  const start=(S.acctMeta||{}).start||"",today=acToday(),have=new Set([...acItems("exp"),...acItems("bill"),...acItems("adv")].map(x=>x.ref).filter(Boolean));
+  return S.sessions.filter(s=>s.date&&s.date>=start&&s.date<=today&&!have.has("rent:"+s.id)).map(s=>({s,amt:acR(rentTotal(s))})).filter(x=>x.amt>0).sort((a,b)=>a.s.date.localeCompare(b.s.date));
+}
+
+/* ---- periods: day / week (Mon–Sun) / month ---- */
+let acPer={k:"month",ref:acYmd(now())};
+const acSavePer=()=>{try{localStorage.setItem(uiKey("bgo-acper"),JSON.stringify(acPer));}catch(_){}};
+const acPd=iso=>{const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d);};
+function acRange(p){
+  const dt=acPd(p.ref),y=dt.getFullYear(),m=dt.getMonth(),d=dt.getDate();
+  if(p.k==="day")return {from:p.ref,to:p.ref,label:fmtD(p.ref)};
+  if(p.k==="week"){const wd=(dt.getDay()+6)%7,a=acYmd(new Date(y,m,d-wd)),b=acYmd(new Date(y,m,d-wd+6));return {from:a,to:b,label:`${fmtD(a)} – ${fmtD(b)}`};}
+  return {from:acYmd(new Date(y,m,1)),to:acYmd(new Date(y,m+1,0)),label:dt.toLocaleDateString(LOC(),{month:"long",year:"numeric"})};
+}
+function acShift(p,dir){
+  const dt=acPd(p.ref),y=dt.getFullYear(),m=dt.getMonth(),d=dt.getDate();
+  if(p.k==="day")return {k:p.k,ref:acYmd(new Date(y,m,d+dir))};
+  if(p.k==="week")return {k:p.k,ref:acYmd(new Date(y,m,d+7*dir))};
+  return {k:p.k,ref:acYmd(new Date(y,m+dir,1))};
+}
+/* days of [from,to] (inclusive) that have anything in them, for the day-by-day table */
+function acDaysIn(from,to){const out=[];for(let d=acPd(from);acYmd(d)<=to;d.setDate(d.getDate()+1))out.push(acYmd(d));return out;}
+
+/* ---------- views ---------- */
+let acTab="inc";
+const AC_TABS=[["inc","รายรับ","Income"],["exp","รายจ่าย","Expenses"],["pnl","กำไร–ขาดทุน","Profit & Loss"],["cash","เงินสด & ธนาคาร","Cash & Bank"],["recv","ลูกหนี้","Receivables"],["pay","เจ้าหนี้","Payables"],["fund","เงินกองกลาง","Fund"],["rec","ตรวจสอบยอด","Reconciliation"]];
+const acAcct=(book,id)=>{const a=book.accs.find(x=>x.id===id);return a?a.name:"—";};
+const acDShort=iso=>{if(!iso)return "";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString(LOC(),{day:"numeric",month:"short"});};
+const acPerBar=()=>{const r=acRange(acPer);
+  return `<div class="acper"><div class="seg" role="group" aria-label="ช่วงเวลา">${[["day","วัน"],["week","สัปดาห์"],["month","เดือน"]].map(([k,t])=>`<button type="button" data-act="acPerK" data-id="${k}" aria-pressed="${acPer.k===k}">${t}</button>`).join("")}</div>
+    <div class="acp-n"><button type="button" class="ghost sm" data-act="acPerGo" data-id="-1" aria-label="ก่อนหน้า">‹</button><b class="acp-l">${esc(r.label)}</b><button type="button" class="ghost sm" data-act="acPerGo" data-id="1" aria-label="ถัดไป">›</button><button type="button" class="ghost sm" data-act="acPerGo" data-id="0">วันนี้</button></div></div>`;};
+const acAmt=(n,tone)=>`<span class="num" ${tone?`style="color:${tone}"`:""}>${acM(n)}</span>`;
+function acEntryRow(x,book,kind){
+  const cat=kind==="inc"?(AC_INC_NAME[x.cat]||x.cat):(AC_EXP_NAME[x.cat]||x.cat);
+  const where=x.adv?"ผู้จัดสำรองจ่าย":x.auto?`${x.m==="transfer"?"รับโอน":"เงินสด"} → ${acAcct(book,x.acct)}`:acAcct(book,x.acct);
+  const sub=[x.auto?`รอบ ${x.label}`:x.label,x.payee,x.from,where,x.fund?"จ่ายจากกองกลาง":"",x.billId?"ชำระบิลค้างจ่าย":""].filter(Boolean).map(esc).join(" · ");
+  const manual=!x.auto&&x.e;
+  return `<div class="acr"><span class="d num">${esc(acDShort(x.d))}</span><div class="m"><b>${esc(cat)}</b><span class="small muted">${sub}</span></div><span class="a num" style="color:${kind==="inc"?"var(--ready)":"var(--bad)"}">${kind==="inc"?"+":"−"}${acM(x.amt)}</span>
+    ${manual?`<div class="acts"><button class="ghost sm" data-act="acEdit" data-id="${esc(x.id)}">แก้ไข</button><button class="ghost sm" data-act="acDel" data-id="${esc(x.id)}">ลบ</button></div>`:x.auto?`<div class="acts"><button class="ghost sm" data-act="gotoSess" data-id="${esc(x.sid)}">ดูรอบ</button></div>`:""}</div>`;
+}
+function acSetupView(){
+  return `<section class="panel"><div class="ph"><h2>บัญชีของก๊วน</h2></div>
+    <div class="empty" style="text-align:left;display:grid;gap:10px"><b>เริ่มทำบัญชีก๊วน</b>
+    <span>บันทึกรายรับ–รายจ่าย เงินสด ธนาคาร e-Wallet ลูกหนี้ เจ้าหนี้ และเงินกองกลาง ในที่เดียว</span>
+    <span>เงินที่ผู้เล่นจ่ายในแต่ละรอบ ระบบดึงมาลงบัญชีให้เอง (แยกสมาชิก / Walk-in) ไม่ต้องคีย์ซ้ำ</span>
+    <span>${DB.mode==="gh"?"ข้อมูลบัญชีเข้ารหัสด้วยรหัสผ่านผู้จัด ผู้เล่นมองไม่เห็น":"ข้อมูลบัญชีอยู่ในหน้าผู้จัดเท่านั้น"}</span>
+    <div><button class="primary" data-act="acSetup">เริ่มใช้บัญชี</button></div></div></section>`;
+}
+/* 6.1 income */
+function acViewInc(book){
+  const r=acRange(acPer),P=acPnl(book,r.from,r.to),list=book.inc.filter(x=>x.d>=r.from&&x.d<=r.to).slice().reverse();
+  const other=acR((P.inc.shuttleFee||0)+(P.inc.shuttleSale||0)+(P.inc.noshow||0)+(P.inc.other||0)+(P.inc.adjIn||0));
+  return `${acPerBar()}
+    <section class="kpis"><div class="kpi"><span class="k">รายรับรวม</span><span class="v">${acM(P.ti)} ฿</span><span class="s">${esc(r.label)}</span></div>
+      <div class="kpi"><span class="k">ค่าลงสนามสมาชิก</span><span class="v">${acM(P.inc.member||0)}</span><span class="s">฿</span></div>
+      <div class="kpi"><span class="k">ค่าสนาม Walk-in / รับเชิญ</span><span class="v">${acM(P.inc.guest||0)}</span><span class="s">฿</span></div>
+      <div class="kpi"><span class="k">สปอนเซอร์</span><span class="v">${acM(P.inc.sponsor||0)}</span><span class="s">฿ · รายรับอื่น ๆ ${acM(other)} ฿</span></div></section>
+    <section class="panel"><div class="ph"><h2>รายการรายรับ</h2><span class="sp"></span><button class="primary" data-act="acIncome">+ บันทึกรายรับ</button></div>
+      <p class="small muted" style="margin:0 0 8px">ค่าลงสนามของผู้เล่นมาจากการรับเงินในแท็บ “ค่าใช้จ่าย” โดยอัตโนมัติ — Walk-in คือผู้เล่นที่ผู้จัดเพิ่มหน้างานและไม่ได้อยู่ในรายชื่อสมาชิก</p>
+      ${list.length?`<div class="aclist">${list.map(x=>acEntryRow(x,book,"inc")).join("")}</div>`:`<div class="empty">ยังไม่มีรายรับในช่วงนี้</div>`}</section>`;
+}
+/* 6.2 expenses */
+function acViewExp(book){
+  const r=acRange(acPer),P=acPnl(book,r.from,r.to),list=book.exp.filter(x=>x.d>=r.from&&x.d<=r.to).slice().reverse();
+  return `${acPerBar()}
+    <section class="kpis"><div class="kpi"><span class="k">รายจ่ายรวม</span><span class="v">${acM(P.te)} ฿</span><span class="s">${esc(r.label)}</span></div>
+      ${AC_EXP.slice(0,3).map(([k,t])=>`<div class="kpi"><span class="k">${esc(t)}</span><span class="v">${acM(P.exp[k]||0)}</span><span class="s">฿</span></div>`).join("")}</section>
+    <section class="panel"><div class="ph"><h2>รายการรายจ่าย</h2><span class="sp"></span><button class="primary" data-act="acExpense">+ บันทึกรายจ่าย</button></div>
+      <p class="small muted" style="margin:0 0 8px">จ่ายแล้วจากบัญชีก๊วน · ผู้จัดสำรองจ่ายก่อน (รอรับคืน) · หรือยังไม่ได้จ่าย (เป็นเจ้าหนี้) เลือกได้ตอนบันทึก — ค่าอุปกรณ์ส่วนกลาง ${acM(P.exp.equip||0)} ฿ · ค่าใช้จ่ายอื่น ๆ ${acM(P.exp.other||0)} ฿</p>
+      ${list.length?`<div class="aclist">${list.map(x=>acEntryRow(x,book,"exp")).join("")}</div>`:`<div class="empty">ยังไม่มีรายจ่ายในช่วงนี้</div>`}</section>`;
+}
+/* 6.3 profit & loss */
+function acViewPnl(book){
+  const r=acRange(acPer),P=acPnl(book,r.from,r.to),R=acReceivables(),Y=acPayables();
+  const recvIn=acR(R.players.filter(x=>x.date>=r.from&&x.date<=r.to).reduce((a,x)=>a+x.owe,0));
+  const payIn=acR(Y.open.filter(b=>b.date>=r.from&&b.date<=r.to).reduce((a,b)=>a+b.left,0));
+  const line=(k,v,cls)=>`<tr${cls?` class="${cls}"`:""}><td>${k}</td><td class="n">${v}</td></tr>`;
+  const otherKeys=["shuttleFee","shuttleSale","noshow","other","adjIn"];
+  const otherSum=acR(otherKeys.reduce((a,k)=>a+(P.inc[k]||0),0));
+  const days=r.from===r.to?[]:acDaysIn(r.from,r.to).map(d=>({d,i:acPnl(book,d,d)})).filter(x=>x.i.ti||x.i.te);
+  const best=Math.max(1,...days.map(x=>Math.max(x.i.ti,x.i.te)));
+  return `${acPerBar()}
+    <section class="kpis"><div class="kpi"><span class="k">รายรับ</span><span class="v">${acM(P.ti)} ฿</span></div><div class="kpi"><span class="k">รายจ่าย</span><span class="v">${acM(P.te)} ฿</span></div>
+      <div class="kpi" style="border-color:${acTone(P.net)}"><span class="k">${P.net>=0?"กำไร / เงินเหลือ":"ขาดทุน"}</span><span class="v" style="color:${acTone(P.net)}">${acSgn(P.net)} ฿</span><span class="s">${esc(r.label)}</span></div>
+      <div class="kpi"><span class="k">เฉลี่ยตามรายการค้าง</span><span class="v" style="color:${acTone(P.net+recvIn-payIn)}">${acSgn(P.net+recvIn-payIn)} ฿</span><span class="s">ถ้าเก็บค้างรับและจ่ายค้างจ่ายครบ</span></div></section>
+    <section class="panel"><div class="ph"><h2>งบกำไร–ขาดทุน</h2><span class="muted small">${esc(r.label)} · ตามเงินที่รับและจ่ายจริง</span></div>
+      <div class="tw"><table class="actbl"><tbody>
+        <tr><th colspan="2">รายรับ</th></tr>
+        ${line(AC_INC_NAME.member,acM(P.inc.member||0))}${line(AC_INC_NAME.guest,acM(P.inc.guest||0))}${line(AC_INC_NAME.sponsor,acM(P.inc.sponsor||0))}
+        ${line("รายรับอื่น ๆ",acM(otherSum))}${otherKeys.filter(k=>P.inc[k]).map(k=>line(`<span class="muted small">· ${esc(AC_INC_NAME[k])}</span>`,`<span class="muted small">${acM(P.inc[k])}</span>`)).join("")}
+        ${line("<b>รวมรายรับ</b>",`<b>${acM(P.ti)}</b>`)}
+        <tr><th colspan="2">รายจ่าย</th></tr>
+        ${AC_EXP.map(([k,t])=>line(esc(t),acM(P.exp[k]||0))).join("")}${P.exp.adjOut?line(esc(AC_EXP_NAME.adjOut),acM(P.exp.adjOut)):""}
+        ${line("<b>รวมรายจ่าย</b>",`<b>${acM(P.te)}</b>`)}
+        <tr class="tot"><td><b style="color:${acTone(P.net)}">${P.net>=0?"กำไร / เงินเหลือสุทธิ":"ขาดทุนสุทธิ"}</b></td><td class="n"><b style="color:${acTone(P.net)};font-size:1.1rem">${acSgn(P.net)}</b></td></tr>
+        <tr><th colspan="2">รายการค้างของรอบในช่วงนี้</th></tr>
+        ${line("ค่าลงสนามที่ผู้เล่นยังไม่จ่าย (ลูกหนี้)",`+${acM(recvIn)}`)}${line("ค่าใช้จ่ายที่ยังไม่ได้จ่าย (เจ้าหนี้)",`−${acM(payIn)}`)}
+        ${line("<b>กำไร / ขาดทุน ถ้าเก็บและจ่ายครบ</b>",`<b>${acSgn(P.net+recvIn-payIn)}</b>`)}
+      </tbody></table></div></section>
+    ${days.length?`<section class="panel"><div class="ph"><h2>รายวัน</h2></div><div class="aclist">${days.map(x=>`<div class="acr day"><span class="d num">${esc(acDShort(x.d))}</span><div class="m"><div class="acbar"><span class="in" style="width:${Math.round(x.i.ti/best*100)}%"></span></div><div class="acbar"><span class="out" style="width:${Math.round(x.i.te/best*100)}%"></span></div><span class="small muted">รายรับ ${acM(x.i.ti)} · รายจ่าย ${acM(x.i.te)}</span></div><span class="a num" style="color:${acTone(x.i.net)}">${acSgn(x.i.net)}</span></div>`).join("")}</div></section>`:""}`;
+}
+/* 6.4 cash & bank */
+function acViewCash(book){
+  const today=acToday(),tot=acBalAll(book);
+  const counts=acItems("cnt"),lastCnt=id=>counts.filter(c=>c.acct===id).sort((a,b)=>b.date.localeCompare(a.date)||(b.at||0)-(a.at||0))[0];
+  const byKind=k=>acR(book.accs.filter(a=>a.kind===k).reduce((s,a)=>s+acBal(book,a.id),0));
+  const recent=book.moves.filter(m=>m.d<=today).slice().reverse().slice(0,15);
+  return `<section class="kpis"><div class="kpi"><span class="k">เงินรวมทุกบัญชี</span><span class="v">${acM(tot)} ฿</span><span class="s">ตามสมุดบัญชี ณ วันนี้</span></div>
+    ${Object.keys(AC_KIND).map(k=>`<div class="kpi"><span class="k">${AC_KIND[k]}</span><span class="v">${acM(byKind(k))}</span><span class="s">฿</span></div>`).join("")}</section>
+    <section class="panel"><div class="ph"><h2>บัญชีเงินสด ธนาคาร และ e-Wallet</h2><span class="sp"></span><button data-act="acTransfer">โอนระหว่างบัญชี</button><button data-act="acCount">บันทึกยอดจริง</button><button data-act="acAccount">+ เพิ่มบัญชี</button></div>
+      <div class="accards">${book.accs.map(a=>{const bal=acBal(book,a.id),c=lastCnt(a.id),diff=c?acR(c.amount-acBal(book,a.id,c.date)):null;
+        return `<article class="accard"><div class="pn"><b>${esc(a.name)}</b><span class="chip s-off">${esc(AC_KIND[a.kind]||a.kind)}</span></div>
+          <div class="big num">${acM(bal)} <small>฿</small></div>
+          <div class="small muted">ยอดยกมา ${acM(a.opening||0)} ฿ · ตั้งแต่ ${esc(acDShort(a.openDate||""))}</div>
+          <div class="small">${c?`ยอดจริงล่าสุด ${acM(c.amount)} ฿ (${esc(acDShort(c.date))}) · ${diff===0?'<span style="color:var(--ready)">ตรงกับสมุดบัญชี</span>':`<span style="color:var(--bad)">ต่างจากสมุดบัญชี ${acSgn(diff)} ฿</span>`}`:'<span class="muted">ยังไม่เคยบันทึกยอดจริง</span>'}</div>
+          <div class="acts"><button class="sm" data-act="acCount" data-id="${esc(a.id)}">บันทึกยอดจริง</button><button class="ghost sm" data-act="acAccount" data-id="${esc(a.id)}">แก้ไข</button></div></article>`;}).join("")}</div></section>
+    <section class="panel"><div class="ph"><h2>รับเงินจากผู้เล่นเข้าบัญชีไหน</h2></div>
+      <p class="small" style="margin:0 0 8px">เงินสด → <b>${esc(acAcct(book,acMapNow(book,"cash")))}</b> · เงินโอน → <b>${esc(acAcct(book,acMapNow(book,"transfer")))}</b> <button class="ghost sm" data-act="acMap">เปลี่ยนบัญชีรับเงิน</button></p>
+      <p class="small muted" style="margin:0">การเปลี่ยนมีผลกับเงินที่รับวันนี้ (รวมที่รับไปแล้ววันนี้) และต่อจากนี้ รายการของวันก่อนหน้าอยู่บัญชีเดิม</p></section>
+    <section class="panel"><div class="ph"><h2>รายการเคลื่อนไหวล่าสุด</h2></div>
+      ${recent.length?`<div class="aclist">${recent.map(m=>`<div class="acr"><span class="d num">${esc(acDShort(m.d))}</span><div class="m"><b>${esc(acKindName(m))}</b><span class="small muted">${esc(acAcct(book,m.acct))}${m.peer?(m.amt<0?" → ":" ← ")+esc(acAcct(book,m.peer)):""}${m.label?" · "+esc(m.label):""}</span></div><span class="a num" style="color:${acTone(m.amt)}">${acSgn(m.amt)}</span>${m.id&&["trf","adj","rbs"].includes(m.kind)?`<div class="acts"><button class="ghost sm" data-act="acDel" data-id="${esc(m.id)}">ลบ</button></div>`:""}</div>`).join("")}</div>`:`<div class="empty">ยังไม่มีรายการ</div>`}</section>`;
+}
+const acKindName=m=>({rc:"รับเงินจากผู้เล่น",inc:"รายรับ",exp:"รายจ่าย",rbs:"คืนเงินผู้จัด",trf:m.amt<0?"โอนออก":"โอนเข้า",adj:"ปรับยอด"}[m.kind]||"");
+const acMapNow=(book,m)=>{const mp=(Array.isArray(book.meta.maps)?book.meta.maps:[]).slice().sort((a,b)=>a.from.localeCompare(b.from)),t=acToday();let x=mp[0]||{};mp.forEach(y=>{if(y.from<=t)x=y;});return (m==="transfer"?x.transfer:x.cash)||"";};
+/* 6.5 receivables */
+function acViewRecv(book){
+  const R=acReceivables(),by={};R.players.forEach(x=>{(by[x.pid]=by[x.pid]||{pid:x.pid,name:x.name,total:0,items:[]});by[x.pid].total+=x.owe;by[x.pid].items.push(x);});
+  const groups=Object.values(by).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name,"th"));
+  return `<section class="kpis"><div class="kpi"><span class="k">ผู้เล่นค้างจ่าย</span><span class="v">${acM(R.playersTotal)} ฿</span><span class="s">${groups.length} คน</span></div>
+    <div class="kpi"><span class="k">ผู้จัดสำรองจ่าย รอรับคืน</span><span class="v">${acM(R.advTotal)} ฿</span><span class="s">${R.adv.length} รายการ</span></div>
+    <div class="kpi"><span class="k">รวมลูกหนี้</span><span class="v">${acM(R.playersTotal+R.advTotal)} ฿</span></div></section>
+    <section class="panel"><div class="ph"><h2>สมาชิกที่ลงเล่นแล้วแต่ยังไม่จ่าย</h2></div>
+      ${groups.length?`<div class="debts">${groups.map(g=>`<div class="debt"><div class="debt-h"><b>${esc(g.name)}</b><span class="chip s-warn">ค้าง ${acM(g.total)} ฿</span></div>${g.items.map(e=>`<div class="debt-r"><span class="small">${esc(fmtD(e.date))} · ${esc(e.title)}${e.open?' <span class="muted">(รอบนี้ยังไม่ปิด)</span>':""}<br><b>${acM(e.owe)} ฿</b>${e.due!==e.owe?` <span class="muted">จาก ${acM(e.due)}</span>`:""}</span>
+        ${e.entry?`<button class="sm" data-act="acDebtPay" data-id="${esc(e.pid)}|${esc(e.sid)}">รับเงินค้าง</button>`:`<button class="sm" data-act="acGoMoney" data-id="${esc(e.sid||"")}">ไปหน้ารับเงิน</button>`}</div>`).join("")}</div>`).join("")}</div>`:`<div class="empty">ไม่มียอดค้างจ่าย 🎉</div>`}</section>
+    <section class="panel"><div class="ph"><h2>ผู้จัดสำรองจ่ายแทนก๊วน — รอรับคืน</h2><span class="sp"></span><button data-act="acExpense" data-id="adv">+ บันทึกสำรองจ่าย</button></div>
+      ${R.adv.length?`<div class="aclist">${R.adv.map(a=>`<div class="acr"><span class="d num">${esc(acDShort(a.date))}</span><div class="m"><b>${esc(AC_EXP_NAME[a.cat]||a.cat)}</b><span class="small muted">${[a.memo,a.payee,a.who?"จ่ายโดย "+a.who:""].filter(Boolean).map(esc).join(" · ")}${+a.amount!==a.left?` · คืนแล้ว ${acM(a.amount-a.left)} จาก ${acM(a.amount)}`:""}</span></div><span class="a num">${acM(a.left)}</span>
+        <div class="acts"><button class="primary sm" data-act="acAdvRepay" data-id="${esc(a.id)}">คืนเงินผู้จัด</button><button class="ghost sm" data-act="acEdit" data-id="${esc(a.id)}">แก้ไข</button><button class="ghost sm" data-act="acDel" data-id="${esc(a.id)}">ลบ</button></div></div>`).join("")}</div>`:`<div class="empty">ไม่มีรายการรอรับคืน</div>`}
+      ${(()=>{const rb=acItems("rbs").slice().sort((a,b)=>b.date.localeCompare(a.date)||(b.at||0)-(a.at||0)).slice(0,8);return rb.length?`<h3 style="margin:14px 0 6px">คืนเงินผู้จัดแล้ว (ล่าสุด)</h3><div class="aclist">${rb.map(r=>{const ad=acItems("adv").find(x=>x.id===r.advId);return `<div class="acr"><span class="d num">${esc(acDShort(r.date))}</span><div class="m"><b>${esc(ad?(AC_EXP_NAME[ad.cat]||ad.cat):"รายการที่ลบแล้ว")}</b><span class="small muted">${esc(acAcct(book,r.acct))}${ad&&ad.who?" · "+esc(ad.who):""}</span></div><span class="a num">${acM(r.amount)}</span><div class="acts"><button class="ghost sm" data-act="acDel" data-id="${esc(r.id)}">ลบ</button></div></div>`;}).join("")}</div>`:"";})()}</section>`;
+}
+/* 6.6 payables */
+function acViewPay(book){
+  const Y=acPayables(),todo=acRentTodo(),today=acToday();
+  return `<section class="kpis"><div class="kpi"><span class="k">ค้างจ่ายรวม</span><span class="v">${acM(Y.total)} ฿</span><span class="s">${Y.open.length} รายการ</span></div>
+    <div class="kpi ${Y.open.some(b=>b.due&&b.due<today)?"alert":""}"><span class="k">เลยกำหนด</span><span class="v">${Y.open.filter(b=>b.due&&b.due<today).length}</span><span class="s">รายการ</span></div></section>
+    <section class="panel"><div class="ph"><h2>ค่าใช้จ่ายค้างจ่าย</h2><span class="sp"></span><button class="primary" data-act="acExpense" data-id="bill">+ บันทึกค้างจ่าย</button></div>
+      <p class="small muted" style="margin:0 0 8px">เช่น ค่าเช่าสนามที่ยังไม่ได้จ่าย ค่าลูกแบดที่สั่งแล้วยังไม่ได้ชำระ</p>
+      ${Y.open.length?`<div class="aclist">${Y.open.map(b=>`<div class="acr"><span class="d num">${esc(acDShort(b.date))}</span><div class="m"><b>${esc(AC_EXP_NAME[b.cat]||b.cat)}${b.vendor?" · "+esc(b.vendor):""}</b><span class="small muted">${[b.memo,b.due?(b.due<today?`<span style="color:var(--bad)">เลยกำหนด ${esc(acDShort(b.due))}</span>`:"กำหนดจ่าย "+esc(acDShort(b.due))):"",b.paid>0?`จ่ายแล้ว ${acM(b.paid)} จาก ${acM(b.amount)}`:""].filter(Boolean).join(" · ")}</span></div><span class="a num">${acM(b.left)}</span>
+        <div class="acts"><button class="primary sm" data-act="acBillPay" data-id="${esc(b.id)}">จ่ายแล้ว</button><button class="ghost sm" data-act="acEdit" data-id="${esc(b.id)}">แก้ไข</button><button class="ghost sm" data-act="acDel" data-id="${esc(b.id)}">ลบ</button></div></div>`).join("")}</div>`:`<div class="empty">ไม่มีรายการค้างจ่าย</div>`}</section>
+    ${todo.length?`<section class="panel"><div class="ph"><h2>ค่าเช่าสนามที่ยังไม่ได้ลงบัญชี</h2></div><p class="small muted" style="margin:0 0 8px">คำนวณจากค่าเช่าที่ตั้งไว้ในแต่ละรอบ — เลือกว่าจ่ายแล้วหรือยังค้างจ่าย</p>
+      <div class="aclist">${todo.map(x=>`<div class="acr"><span class="d num">${esc(acDShort(x.s.date))}</span><div class="m"><b>ค่าเช่าสนาม</b><span class="small muted">${esc(x.s.title||"รอบเล่น")}</span></div><span class="a num">${acM(x.amt)}</span>
+        <div class="acts"><button class="sm" data-act="acRent" data-id="${esc(x.s.id)}|paid">จ่ายแล้ว</button><button class="sm" data-act="acRent" data-id="${esc(x.s.id)}|bill">ค้างจ่าย</button></div></div>`).join("")}</div></section>`:""}
+    <section class="panel"><div class="ph"><h2>จ่ายแล้ว (ประวัติ)</h2></div>
+      ${Y.bills.filter(b=>b.left<=0.004).length?`<div class="aclist">${Y.bills.filter(b=>b.left<=0.004).slice().reverse().slice(0,10).map(b=>`<div class="acr"><span class="d num">${esc(acDShort(b.date))}</span><div class="m"><b>${esc(AC_EXP_NAME[b.cat]||b.cat)}${b.vendor?" · "+esc(b.vendor):""}</b><span class="small muted">จ่ายครบแล้ว ${b.memo?"· "+esc(b.memo):""}</span></div><span class="a num muted">${acM(b.amount)}</span></div>`).join("")}</div>`:`<div class="empty">ยังไม่มี</div>`}</section>`;
+}
+/* 6.7 funds */
+function acViewFund(book){
+  const F=acFunds(book),R=acReceivables(),Y=acPayables(),tot=acBalAll(book),held=acR(F.reduce((a,f)=>a+Math.max(0,f.bal),0));
+  const free=acR(tot-held-Y.total-R.advTotal);
+  return `<section class="kpis"><div class="kpi"><span class="k">เงินในบัญชีทั้งหมด</span><span class="v">${acM(tot)} ฿</span></div><div class="kpi"><span class="k">เงินกองกลางที่กันไว้</span><span class="v">${acM(held)} ฿</span><span class="s">${F.length} ${I18N.lang==="en"?(F.length===1?"fund":"funds"):"กอง"}</span></div>
+    <div class="kpi" style="border-color:${acTone(free)}"><span class="k">เหลือใช้ได้จริง</span><span class="v" style="color:${acTone(free)}">${acM(free)} ฿</span><span class="s">หักกองกลาง ค้างจ่าย ${acM(Y.total)} และรอคืนผู้จัด ${acM(R.advTotal)}</span></div></section>
+    <section class="panel"><div class="ph"><h2>เงินกองกลาง / เงินสะสม</h2><span class="sp"></span><button class="primary" data-act="acFundNew">+ เพิ่มกอง</button></div>
+      <p class="small muted" style="margin:0 0 8px">เงินที่ก๊วนกันไว้ใช้ในอนาคต เช่น สำรองจ่ายค่าสนาม ซื้ออุปกรณ์ หรือรองรับวันที่มีผู้เล่นน้อย — ยังอยู่ในบัญชีเงินสด/ธนาคารตามเดิม เป็นเพียงการกันไว้</p>
+      ${F.length?`<div class="accards">${F.map(f=>`<article class="accard"><div class="pn"><b>${esc(f.name)}</b>${f.target>0?`<span class="chip ${f.bal>=f.target?"s-ready":"s-off"}">เป้า ${acM(f.target)}</span>`:""}</div>
+        <div class="big num">${acM(f.bal)} <small>฿</small></div>${f.target>0?`<div class="bar"><span style="width:${Math.max(0,Math.min(100,f.bal/f.target*100))}%"></span></div>`:""}
+        ${f.note?`<div class="small muted">${esc(f.note)}</div>`:""}
+        <div class="acts"><button class="primary sm" data-act="acFundMove" data-id="${esc(f.id)}|in">+ กันเงินเข้ากอง</button><button class="sm" data-act="acFundMove" data-id="${esc(f.id)}|spend">จ่ายจากกอง</button><button class="ghost sm" data-act="acFundMove" data-id="${esc(f.id)}|out">ถอนคืน</button><button class="ghost sm" data-act="acFundNew" data-id="${esc(f.id)}">แก้ไข</button></div></article>`).join("")}</div>`:`<div class="empty">ยังไม่มีกองกลาง — กด “เพิ่มกอง”</div>`}
+      ${(()=>{const lg=acItems("fnd").slice().sort((a,b)=>b.date.localeCompare(a.date)||(b.at||0)-(a.at||0)).slice(0,8);return lg.length?`<h3 style="margin:14px 0 6px">การเคลื่อนไหวล่าสุด</h3><div class="aclist">${lg.map(x=>{const f=F.find(q=>q.id===x.fund);return `<div class="acr"><span class="d num">${esc(acDShort(x.date))}</span><div class="m"><b>${esc(f?f.name:"กองที่ลบแล้ว")}</b><span class="small muted">${esc(x.memo||(x.amount>0?"กันเงินเข้ากอง":"คืนเป็นเงินใช้ทั่วไป"))}</span></div><span class="a num" style="color:${acTone(x.amount)}">${acSgn(x.amount)}</span><div class="acts"><button class="ghost sm" data-act="acDel" data-id="${esc(x.id)}">ลบ</button></div></div>`;}).join("")}</div>`:"";})()}
+    </section>`;
+}
+/* 6.8 reconciliation */
+function acViewRec(book){
+  const r=acRange(acPer),today=acToday(),counts=acItems("cnt");
+  const cardOf=a=>{const f=acFlow(book,a.id,r.from,r.to);
+    const c=counts.filter(x=>x.acct===a.id&&x.date<=r.to).sort((x,y)=>y.date.localeCompare(x.date)||(y.at||0)-(x.at||0))[0];
+    const diff=c?acR(c.amount-acBal(book,a.id,c.date)):null;
+    return {a,f,c,diff,af:c&&diff!==0?acAfterCount(book,c):{n:0,sum:0}};};
+  const cards=book.accs.map(cardOf);
+  /* all accounts together: moving money between the club's own accounts is neither money in nor money out */
+  const T=cards.reduce((t,x)=>({open:t.open+x.f.open+x.f.opened,inn:t.inn+x.f.inn-x.f.trIn,out:t.out+x.f.out-x.f.trOut,close:t.close+x.f.close}),{open:0,inn:0,out:0,close:0});
+  const allCounted=cards.length&&cards.every(x=>x.c);const actualTot=acR(cards.reduce((a,x)=>a+(x.c?x.c.amount:0),0));
+  const formula=(o,i,u,c)=>`${acM(o)} + ${acM(i)} − ${acM(u)} = <b>${acM(c)}</b>`;
+  return `${acPerBar()}
+    <section class="panel"><div class="ph"><h2>ตรวจสอบยอดเงิน</h2><span class="muted small">${esc(r.label)}</span><span class="sp"></span><button data-act="acCount" data-id="">บันทึกยอดจริง</button></div>
+      <p class="small" style="margin:0 0 6px"><b>ยอดต้นงวด + เงินรับ − เงินจ่าย = ยอดปลายงวด</b> แล้วเทียบกับเงินสด / ยอดธนาคารจริง</p>
+      <div class="notice small" style="margin:0 0 10px">รวมทุกบัญชี: ${formula(T.open,T.inn,T.out,T.close)} ฿${allCounted?` · ยอดจริงรวม ${acM(actualTot)} ฿`:""}</div>
+      <div class="accards">${cards.map(({a,f,c,diff,af})=>`<article class="accard"><div class="pn"><b>${esc(a.name)}</b><span class="chip s-off">${esc(AC_KIND[a.kind]||a.kind)}</span></div>
+        <div class="tw"><table class="actbl"><tbody>
+          <tr><td>ยอดต้นงวด${f.opened?` <span class="muted small">(รวมยอดยกมาตอนเริ่มทำบัญชี)</span>`:""}</td><td class="n">${acM(f.open+f.opened)}</td></tr>
+          <tr><td>+ เงินรับ${f.trIn>0?` <span class="muted small">(รวมโอนจากบัญชีอื่น ${acM(f.trIn)})</span>`:""}</td><td class="n" style="color:var(--ready)">${acM(f.inn)}</td></tr><tr><td>− เงินจ่าย${f.trOut>0?` <span class="muted small">(รวมโอนไปบัญชีอื่น ${acM(f.trOut)})</span>`:""}</td><td class="n" style="color:var(--bad)">${acM(f.out)}</td></tr>
+          <tr class="tot"><td><b>= ยอดปลายงวด (ตามสมุดบัญชี)</b></td><td class="n"><b>${acM(f.close)}</b></td></tr>
+          <tr><td>ยอดจริง${c?` <span class="muted small">(นับเมื่อ ${esc(acDShort(c.date))})</span>`:""}</td><td class="n">${c?acM(c.amount):'<span class="muted">ยังไม่ได้บันทึก</span>'}</td></tr>
+          ${c?`<tr><td><b>ผลต่าง</b>${c.date!==r.to?` <span class="muted small">(เทียบยอดสมุด ณ ${esc(acDShort(c.date))})</span>`:""}</td><td class="n"><b style="color:${diff===0?"var(--ready)":"var(--bad)"}">${diff===0?"ตรงกัน ✓":acSgn(diff)}</b></td></tr>${af.n?`<tr><td colspan="2" class="small muted">บันทึกหลังนับ ${af.n} รายการ (รวม ${acSgn(af.sum)} ฿) — ถ้าเกิดหลังนับ ให้บันทึกยอดจริงใหม่</td></tr>`:""}`:""}
+        </tbody></table></div>
+        <div class="acts"><button class="sm" data-act="acCount" data-id="${esc(a.id)}">บันทึกยอดจริง</button>${c&&diff!==0?`<button class="ghost sm" data-act="acAdjust" data-id="${esc(c.id)}">ปรับสมุดบัญชีให้ตรงยอดจริง</button>`:""}</div></article>`).join("")}</div></section>`;
+}
+function vAcct(){
+  if(!DB.isOrg)return `<section class="panel"><div class="empty">เมนูนี้สำหรับผู้จัดก๊วนเท่านั้น</div></section>`;
+  if(!acOn())return acSetupView();
+  const book=acBook();
+  const nav=`<div class="acnav" role="tablist" aria-label="หัวข้อบัญชี">${AC_TABS.map(([k,t,e])=>`<button type="button" role="tab" data-act="acTab" data-id="${k}" aria-selected="${acTab===k}">${I18N.lang==="en"?e:t}</button>`).join("")}</div>`;
+  const head=`<div class="ph" style="margin:0 0 8px"><span class="muted small">เริ่มทำบัญชีตั้งแต่ ${esc(fmtD(S.acctMeta.start))}</span><span class="sp"></span><span class="acts"><button class="ghost sm" data-act="acExport">ส่งออก Excel</button><button class="ghost sm" data-act="acStart">ตั้งค่า</button></span></div>`;
+  const fn={inc:acViewInc,exp:acViewExp,pnl:acViewPnl,cash:acViewCash,recv:acViewRecv,pay:acViewPay,fund:acViewFund,rec:acViewRec}[acTab]||acViewInc;
+  return `<div class="acwrap">${head}${nav}${fn(book)}</div>`;
+}
+
+/* ---------- dialogs and actions ---------- */
+function acLoadUi(){
+  try{const v=localStorage.getItem(uiKey("bgo-actab"));if(AC_TABS.some(x=>x[0]===v))acTab=v;}catch(_){}
+  try{const o=JSON.parse(localStorage.getItem(uiKey("bgo-acper"))||"null");if(o&&["day","week","month"].includes(o.k)&&/^\d{4}-\d\d-\d\d$/.test(o.ref))acPer=o;}catch(_){}
+}
+const acPath=id=>`private/acct/items/${id}`;
+const acPut=(id,obj,msg)=>write(acPath(id),obj,msg);
+async function acRemove(id){try{await delDoc(acPath(id));return true;}catch(e){toast("ลบไม่สำเร็จ: "+((e&&e.message)||"ลองอีกครั้ง"));return false;}}
+const acBy=()=>DB.meName||TT("ผู้จัด");
+function acAccSel(name,sel,label,skip){
+  return `<label class="f">${label||"บัญชี"}<select name="${name}">${acAccounts().filter(a=>a.id!==skip).map(a=>`<option value="${esc(a.id)}"${a.id===sel?" selected":""}>${esc(a.name)} (${esc(AC_KIND[a.kind]||"")})</option>`).join("")}</select><span class="ferr"></span></label>`;
+}
+function acDate(f,n){
+  const v=fv(f,n||"date"),start=(S.acctMeta||{}).start||"";
+  if(!/^\d{4}-\d\d-\d\d$/.test(v)||isNaN(acPd(v)))return fieldErr(f,n||"date","เลือกวันที่");
+  if(v<start)return fieldErr(f,n||"date",`ก่อนวันเริ่มทำบัญชี (${fmtD(start)})`);
+  if(v>acToday())return fieldErr(f,n||"date","เลือกวันที่เป็นอนาคตไม่ได้");
+  return v;
+}
+const acDateIn=(n,lbl,v,cls)=>`<label class="f${cls?" "+cls:""}">${lbl}<input type="date" name="${n}" value="${esc(v||acToday())}" min="${esc((S.acctMeta||{}).start||"")}" max="${acToday()}" required><span class="ferr"></span></label>`;
+const acTxt=(n,lbl,v,ph,cls)=>`<label class="f${cls?" "+cls:""}">${lbl}<input name="${n}" maxlength="80" value="${esc(v||"")}" placeholder="${esc(ph||"")}" autocomplete="off"><span class="ferr"></span></label>`;
+/* the book balance is short of what is being paid out: ask before going on */
+async function acEnough(accId,amount,back){
+  const book=acBook(),bal=acR(acBal(book,accId)+(back||0));
+  if(amount<=bal+0.004)return true;
+  const a=book.accs.find(x=>x.id===accId);
+  return askConfirm({title:"ยอดในบัญชีไม่พอ",ok:"บันทึกต่อ",cancel:"กลับไปแก้",body:`<p>บัญชี “${esc(a?a.name:"")}” มีตามสมุด <b>${acM(bal)} ฿</b> แต่รายการนี้ ${acM(amount)} ฿</p><p class="small muted">ถ้าสมุดบัญชียังไม่ครบ (ลืมบันทึกเงินเข้า) ให้บันทึกต่อได้ แล้วค่อยตรวจสอบยอดที่เมนู “ตรวจสอบยอด”</p>`});
+}
+
+/* first time: start date + the accounts the club keeps money in */
+function dlgAcSetup(){
+  const t=acToday();
+  openDlg(`<form novalidate><h2>เริ่มทำบัญชีก๊วน</h2>
+    <p class="small muted" style="margin:0 0 10px">ใส่ยอดเงินที่ก๊วนมีอยู่ ณ วันเริ่มต้น (ก่อนเริ่มวันนั้น) — ระบบนับเงินรับ–จ่ายตั้งแต่วันเริ่มเป็นต้นไป รอบเล่นที่มีวันที่ก่อนวันเริ่มจะไม่ถูกนับ</p>
+    <div class="fg"><label class="f full">วันเริ่มทำบัญชี<input type="date" name="start" value="${t}" max="${t}" required><span class="ferr"></span></label>
+    ${acTxt("n1","บัญชีที่ 1 · เงินสด",TT("เงินสด"),"")}${decIn("o1","ยอดยกมา (฿)","0",0,100000000)}
+    ${acTxt("n2","บัญชีที่ 2 · ธนาคาร (เว้นว่างถ้าไม่มี)",TT("บัญชีธนาคาร"),"ชื่อธนาคาร")}${decIn("o2","ยอดยกมา (฿)","0",0,100000000)}
+    ${acTxt("n3","บัญชีที่ 3 · e-Wallet (ไม่บังคับ)","","เช่น TrueMoney")}${decIn("o3","ยอดยกมา (฿)","0",0,100000000)}</div>
+    <p class="small muted" style="margin:10px 0 0">เงินโอนจากผู้เล่นจะเข้าบัญชีธนาคาร (หรือ e-Wallet ถ้าไม่มีธนาคาร) เงินสดเข้าบัญชีเงินสด — เปลี่ยนได้ภายหลัง</p>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">เริ่มใช้บัญชี</button></div></form>`,async f=>{
+    const start=fv(f,"start");if(!/^\d{4}-\d\d-\d\d$/.test(start)||isNaN(acPd(start)))return fieldErr(f,"start","เลือกวันที่");
+    if(start>acToday())return fieldErr(f,"start","เลือกวันที่เป็นอนาคตไม่ได้");
+    const n1=fv(f,"n1");if(!n1)return fieldErr(f,"n1","ตั้งชื่อบัญชีเงินสด");
+    const o1=checkDec(f,"o1",false);if(o1===false)return false;
+    const n2=fv(f,"n2"),o2=checkDec(f,"o2",false);if(o2===false)return false;
+    const n3=fv(f,"n3"),o3=checkDec(f,"o3",false);if(o3===false)return false;
+    const list=[["cash",n1,o1||0],["bank",n2,o2||0],["wallet",n3,o3||0]].filter(x=>x[1]);
+    const names=list.map(x=>x[1].toLowerCase());if(new Set(names).size!==names.length)return fieldErr(f,"n2","ชื่อบัญชีซ้ำกัน");
+    const ids={};let order=0;
+    for(const [kind,name,open] of list){const id=uid("a");ids[kind]=id;
+      if(!await acPut(id,{t:"acc",kind,name,opening:acR(open),openDate:start,order:order++}))return false;}
+    const ok=await write("private/acct/meta/main",{start,maps:[{from:start,cash:ids.cash,transfer:ids.bank||ids.wallet||ids.cash}],at:now(),by:acBy()},"เริ่มทำบัญชีแล้ว");
+    if(ok){acTab="inc";logEv("เริ่มทำบัญชีก๊วน",`เริ่ม ${fmtD(start)}`);acSnapOpen();}
+    return ok;
+  });
+}
+/* where money players pay is booked */
+function dlgAcMap(){
+  const book=acBook(),cur=k=>acMapNow(book,k);
+  openDlg(`<form novalidate><h2>ตั้งค่าบัญชี</h2>
+    <p class="small muted" style="margin:0 0 10px">เริ่มทำบัญชีตั้งแต่ <b>${esc(fmtD((S.acctMeta||{}).start||""))}</b></p>
+    <div class="fg">${acAccSel("cash",cur("cash"),"ผู้เล่นจ่ายเงินสด → เข้าบัญชี")}${acAccSel("transfer",cur("transfer"),"ผู้เล่นโอน → เข้าบัญชี")}</div>
+    <p class="small muted" style="margin:10px 0 0">มีผลกับเงินที่รับวันนี้ (รวมที่รับไปแล้ววันนี้) และต่อจากนี้ · รายการของวันก่อนหน้าอยู่บัญชีเดิม</p>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const meta=S.acctMeta||{},t=acToday(),c=fv(f,"cash"),tr=fv(f,"transfer");
+    if(c===cur("cash")&&tr===cur("transfer"))return true;
+    let maps=(Array.isArray(meta.maps)?meta.maps:[]).filter(x=>x.from!==t);
+    maps.push({from:t<meta.start?meta.start:t,cash:c,transfer:tr});
+    return write("private/acct/meta/main",{...stripId(meta),maps},"บันทึกแล้ว");
+  });
+}
+/* an account of the club: cash box, bank, e-wallet */
+function dlgAcAccount(id){
+  const e=id?acItems("acc").find(x=>x.id===id):null;if(id&&!e)return;
+  openDlg(`<form novalidate><h2>${e?"แก้ไขบัญชี":"เพิ่มบัญชี"}</h2><div class="fg">
+    ${acTxt("name","ชื่อบัญชี",e?e.name:"","เช่น กสิกร / TrueMoney","full")}
+    <label class="f">ประเภท<select name="kind">${Object.keys(AC_KIND).map(k=>`<option value="${k}"${e&&e.kind===k?" selected":""}>${AC_KIND[k]}</option>`).join("")}</select></label>
+    ${decIn("open",e?"ยอดยกมา (฿)":"ยอดเงินในบัญชีตอนนี้ (฿)",e?e.opening:"0",0,100000000)}</div>
+    ${e?`<p class="small muted" style="margin:10px 0 0">แก้ยอดยกมาจะเปลี่ยนยอดคงเหลือและยอดต้นงวดของทุกช่วงเวลา</p>`:""}
+    <div class="dlg-a">${e?`<button type="button" class="danger sm" data-act="acDel" data-id="${esc(e.id)}" style="margin-right:auto">ลบบัญชี</button>`:""}<button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const name=fv(f,"name");if(!name)return fieldErr(f,"name","ตั้งชื่อบัญชี");
+    if(acAccounts().some(a=>a.id!==(e&&e.id)&&(a.name||"").toLowerCase()===name.toLowerCase()))return fieldErr(f,"name","มีบัญชีชื่อนี้แล้ว");
+    const open=checkDec(f,"open",true);if(open===false)return false;
+    const n=e?e:{t:"acc",openDate:acToday(),order:acAccounts().length};
+    return acPut(e?e.id:uid("a"),{...stripId(n),name,kind:fv(f,"kind"),opening:open},"บันทึกบัญชีแล้ว");
+  });
+}
+/* ---- income ---- */
+function dlgAcIncome(id){
+  const e=id?acItems("inc").find(x=>x.id===id):null;if(id&&!e)return;
+  const book=acBook(),def=e?e.acct:acMapNow(book,"cash");
+  openDlg(`<form novalidate><h2>${e?"แก้ไขรายรับ":"บันทึกรายรับ"}</h2>
+    <p class="small muted" style="margin:0 0 8px">ค่าลงสนามของผู้เล่นไม่ต้องคีย์ — ระบบดึงจากการรับเงินในแท็บ “ค่าใช้จ่าย” ให้เอง</p><div class="fg">
+    <label class="f full">ประเภท<select name="cat">${AC_INC_MAN.map(([k,t])=>`<option value="${k}"${e&&e.cat===k?" selected":""}>${esc(t)}</option>`).join("")}</select></label>
+    ${decIn("amt","จำนวนเงิน (฿)",e?e.amount:"",0.01,100000000)}${acDateIn("date","วันที่รับ",e&&e.date)}
+    ${acAccSel("acct",def,"เข้าบัญชี")}${acTxt("from","จาก (ผู้สนับสนุน / ผู้ซื้อ)",e&&e.from,"")}
+    ${acTxt("memo","รายละเอียด",e&&e.memo,"เช่น ขายลูกแบด 3 หลอด","full")}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    const date=acDate(f);if(date===false)return false;
+    const ok=await acPut(e?e.id:uid("i"),{...(e?stripId(e):{t:"inc",at:now(),by:acBy()}),cat:fv(f,"cat"),amount:amt,date,acct:fv(f,"acct"),from:fv(f,"from"),memo:fv(f,"memo")},"บันทึกรายรับแล้ว");
+    if(ok)logEv(e?"แก้รายรับ":"บันทึกรายรับ",`${AC_INC_NAME[fv(f,"cat")]} ${acM(amt)} ฿`);return ok;
+  });
+}
+/* ---- expense: paid from the club's money / paid first by the organizer / not paid yet ---- */
+function dlgAcExpense(opt){
+  opt=opt||{};const e=opt.e||null,mode0=e?(e.t==="adv"?"adv":e.t==="bill"?"bill":"paid"):(opt.mode||"paid");
+  const book=acBook(),F=acFunds(book),locked=!!e,cat0=(e&&e.cat)||opt.cat||"rent",amt0=e?e.amount:(opt.amount||"");
+  const date0=e?e.date:(opt.date||acToday()),memo0=e?e.memo:(opt.memo||""),payee0=e?(e.payee||e.vendor||""):(opt.payee||"");
+  const rd=(v,t,s)=>`<label class="rd"><input type="radio" name="mode" value="${v}"${mode0===v?" checked":""}><span><b>${t}</b><span class="small muted">${s}</span></span></label>`;
+  const paidAmt=e&&e.t==="bill"?acPayables().bills.find(b=>b.id===e.id).paid:0,repaid=e&&e.t==="adv"?acR(acItems("rbs").filter(r=>r.advId===e.id).reduce((a,r)=>a+(+r.amount||0),0)):0;
+  openDlg(`<form novalidate><h2>${e?"แก้ไขรายจ่าย":"บันทึกรายจ่าย"}</h2>
+    ${locked?`<input type="hidden" name="mode" value="${mode0}">`:`<div style="display:grid;gap:8px;margin:0 0 10px" role="radiogroup" aria-label="สถานะการจ่าย">${rd("paid","จ่ายแล้ว","จ่ายจากเงินสด / ธนาคาร / e-Wallet ของก๊วน")}${rd("adv","ผู้จัดสำรองจ่ายไปก่อน","ก๊วนยังไม่ได้คืนเงิน — ไปอยู่ในลูกหนี้ (รอรับคืน)")}${rd("bill","ยังไม่ได้จ่าย","ค้างจ่าย — ไปอยู่ในเจ้าหนี้ จ่ายทีหลังได้")}</div>`}
+    <div class="fg"><label class="f full">หมวด<select name="cat">${AC_EXP.map(([k,t])=>`<option value="${k}"${cat0===k?" selected":""}>${esc(t)}</option>`).join("")}</select></label>
+    ${decIn("amt","จำนวนเงิน (฿)",amt0,0.01,100000000)}${acDateIn("date",locked&&mode0==="bill"?"วันที่ของบิล":"วันที่",date0)}
+    <div class="full fg" data-mg="paid" style="padding:0">${acAccSel("acct",e&&e.acct||acMapNow(book,"cash"),"จ่ายจากบัญชี")}${F.length?`<label class="f">ตัดจากเงินกองกลาง<select name="fund"><option value="">ไม่ตัด</option>${F.map(x=>`<option value="${esc(x.id)}"${e&&e.fund===x.id||opt.fund===x.id?" selected":""}>${esc(x.name)} (เหลือ ${acM(x.bal)})</option>`).join("")}</select><span class="ferr"></span></label>`:""}</div>
+    <div class="full fg" data-mg="adv" style="padding:0" hidden>${acTxt("who","ผู้สำรองจ่าย",e&&e.who||acBy(),"")}</div>
+    <div class="full fg" data-mg="bill" style="padding:0" hidden><label class="f">กำหนดจ่าย (ไม่บังคับ)<input type="date" name="due" value="${esc(e&&e.due||"")}"><span class="ferr"></span></label></div>
+    ${acTxt("payee","จ่ายให้ / ร้านค้า",payee0,"เช่น สนามบางนา","full")}${acTxt("memo","รายละเอียด",memo0,"เช่น ค่าเช่า 3 คอร์ด 2 ชม.","full")}</div>
+    ${paidAmt>0?`<p class="small muted" style="margin:8px 0 0">จ่ายไปแล้ว ${acM(paidAmt)} ฿ จากบิลนี้ — แก้ยอดให้ต่ำกว่านี้ไม่ได้</p>`:""}${repaid>0?`<p class="small muted" style="margin:8px 0 0">ผู้จัดได้รับคืนแล้ว ${acM(repaid)} ฿ — แก้ยอดให้ต่ำกว่านี้ไม่ได้</p>`:""}
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const mode=f.elements.mode.value,amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    const date=acDate(f);if(date===false)return false;
+    if(amt+0.004<paidAmt)return fieldErr(f,"amt",`ต้องไม่น้อยกว่าที่จ่ายแล้ว ${acM(paidAmt)} ฿`);
+    if(amt+0.004<repaid)return fieldErr(f,"amt",`ต้องไม่น้อยกว่าที่ได้รับคืนแล้ว ${acM(repaid)} ฿`);
+    if(e&&e.t==="exp"&&e.billId){const bl=acItems("bill").find(x=>x.id===e.billId);
+      if(bl){const others=acR(acItems("exp").filter(x=>x.billId===e.billId&&x.id!==e.id).reduce((a,x)=>a+(+x.amount||0),0));
+        if(others+amt>(+bl.amount||0)+0.004)return fieldErr(f,"amt",`เกินยอดบิล ${acM(bl.amount)} ฿ (จ่ายครั้งอื่นไปแล้ว ${acM(others)} ฿)`);}}
+    const cat=fv(f,"cat"),payee=fv(f,"payee"),memo=fv(f,"memo"),ref=(e&&e.ref)||opt.ref||"";
+    let obj;
+    if(mode==="paid"){
+      const acct=fv(f,"acct"),fund=f.elements.fund?fv(f,"fund"):"";
+      if(fund){const fd=F.find(x=>x.id===fund),back=e&&e.fund===fund?+e.amount:0;if(fd&&amt>acR(fd.bal+back)+0.004)return fieldErr(f,"fund",`เกินเงินในกอง (เหลือ ${acM(fd.bal+back)} ฿)`);}
+      if(!await acEnough(acct,amt,e&&e.t==="exp"&&e.acct===acct?+e.amount:0))return false;
+      obj={...(e?stripId(e):{t:"exp",at:now(),by:acBy()}),cat,amount:amt,date,acct,payee,memo,fund,ref};
+      if(!obj.fund)delete obj.fund;
+    }else if(mode==="adv"){
+      const who=fv(f,"who");if(!who)return fieldErr(f,"who","ใส่ชื่อผู้สำรองจ่าย");
+      obj={...(e?stripId(e):{t:"adv",at:now(),by:acBy()}),cat,amount:amt,date,payee,memo,who,ref};
+    }else{
+      const due=fv(f,"due");if(due&&!/^\d{4}-\d\d-\d\d$/.test(due))return fieldErr(f,"due","เลือกวันที่");
+      obj={...(e?stripId(e):{t:"bill",at:now(),by:acBy()}),cat,amount:amt,date,due,vendor:payee,memo,ref};
+    }
+    if(!obj.ref)delete obj.ref;
+    const ok=await acPut(e?e.id:uid(mode==="paid"?"e":mode==="adv"?"v":"b"),obj,{paid:"บันทึกรายจ่ายแล้ว",adv:"บันทึกสำรองจ่ายแล้ว — รอรับคืน",bill:"บันทึกค้างจ่ายแล้ว"}[mode]);
+    if(ok)logEv(e?"แก้รายจ่าย":"บันทึกรายจ่าย",`${AC_EXP_NAME[cat]} ${acM(amt)} ฿ (${{paid:"จ่ายแล้ว",adv:"ผู้จัดสำรองจ่าย",bill:"ค้างจ่าย"}[mode]})`);
+    return ok;
+  });
+  const d=$("#dlg"),upd=()=>{const m=(d.querySelector("[name=mode]:checked")||d.querySelector("[name=mode]")).value;d.querySelectorAll("[data-mg]").forEach(x=>{x.hidden=x.dataset.mg!==m;});};
+  d.querySelectorAll("[name=mode]").forEach(r=>r.addEventListener("change",upd));upd();
+}
+/* ---- pay a bill (whole or part) ---- */
+function dlgAcBillPay(id){
+  const b=acPayables().bills.find(x=>x.id===id);if(!b||b.left<=0.004)return;
+  const book=acBook(),F=acFunds(book);
+  openDlg(`<form novalidate><h2>จ่ายค่าใช้จ่ายค้างจ่าย</h2>
+    <p class="small" style="margin:0 0 8px">${esc(AC_EXP_NAME[b.cat]||b.cat)}${b.vendor?" · "+esc(b.vendor):""} · บิล ${acM(b.amount)} ฿ · ค้างอยู่ <b>${acM(b.left)} ฿</b></p>
+    <div class="fg">${decIn("amt","จ่ายครั้งนี้ (฿)",b.left,0.01,100000000)}${acDateIn("date","วันที่จ่าย")}${acAccSel("acct",acMapNow(book,"cash"),"จ่ายจากบัญชี")}
+    ${F.length?`<label class="f">ตัดจากเงินกองกลาง<select name="fund"><option value="">ไม่ตัด</option>${F.map(x=>`<option value="${esc(x.id)}">${esc(x.name)} (เหลือ ${acM(x.bal)})</option>`).join("")}</select><span class="ferr"></span></label>`:""}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึกการจ่าย</button></div></form>`,async f=>{
+    const amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    if(amt>b.left+0.004)return fieldErr(f,"amt",`เกินยอดค้าง ${acM(b.left)} ฿`);
+    const date=acDate(f);if(date===false)return false;
+    if(date<b.date)return fieldErr(f,"date","ก่อนวันที่ของบิล");
+    const acct=fv(f,"acct"),fund=f.elements.fund?fv(f,"fund"):"";
+    if(fund){const fd=F.find(x=>x.id===fund);if(fd&&amt>fd.bal+0.004)return fieldErr(f,"fund",`เกินเงินในกอง (เหลือ ${acM(fd.bal)} ฿)`);}
+    if(!await acEnough(acct,amt))return false;
+    const o={t:"exp",cat:b.cat,amount:amt,date,acct,payee:b.vendor||"",memo:b.memo||"",billId:b.id,at:now(),by:acBy()};if(fund)o.fund=fund;if(b.ref)o.ref=b.ref;
+    const ok=await acPut(uid("e"),o,amt>=b.left-0.004?"จ่ายครบแล้ว":`จ่ายแล้ว — ค้างอีก ${acM(b.left-amt)} ฿`);
+    if(ok)logEv("จ่ายค่าใช้จ่ายค้างจ่าย",`${AC_EXP_NAME[b.cat]} ${acM(amt)} ฿`);return ok;
+  });
+}
+/* ---- the organizer gets back what he/she paid for the club ---- */
+function dlgAcAdvRepay(id){
+  const a=acReceivables().adv.find(x=>x.id===id);if(!a)return;
+  const book=acBook();
+  openDlg(`<form novalidate><h2>คืนเงินที่ผู้จัดสำรองจ่าย</h2>
+    <p class="small" style="margin:0 0 8px">${esc(AC_EXP_NAME[a.cat]||a.cat)}${a.who?" · "+esc(a.who):""} · สำรองไป ${acM(a.amount)} ฿ · รอรับคืน <b>${acM(a.left)} ฿</b></p>
+    <div class="fg">${decIn("amt","คืนครั้งนี้ (฿)",a.left,0.01,100000000)}${acDateIn("date","วันที่คืน")}${acAccSel("acct",acMapNow(book,"cash"),"คืนจากบัญชี","")}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึกการคืนเงิน</button></div></form>`,async f=>{
+    const amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    if(amt>a.left+0.004)return fieldErr(f,"amt",`เกินยอดที่รอรับคืน ${acM(a.left)} ฿`);
+    const date=acDate(f);if(date===false)return false;if(date<a.date)return fieldErr(f,"date","ก่อนวันที่สำรองจ่าย");
+    const acct=fv(f,"acct");if(!await acEnough(acct,amt))return false;
+    const ok=await acPut(uid("r"),{t:"rbs",advId:a.id,amount:amt,date,acct,memo:"",at:now(),by:acBy()},amt>=a.left-0.004?"คืนครบแล้ว":`คืนแล้ว — ค้างอีก ${acM(a.left-amt)} ฿`);
+    if(ok)logEv("คืนเงินที่ผู้จัดสำรองจ่าย",`${acM(amt)} ฿`);return ok;
+  });
+}
+/* ---- move money between the club's accounts ---- */
+function dlgAcTransfer(){
+  const accs=acAccounts();if(accs.length<2){toast("ต้องมีอย่างน้อย 2 บัญชีจึงจะโอนได้ — เพิ่มบัญชีก่อน");return;}
+  openDlg(`<form novalidate><h2>โอนระหว่างบัญชี</h2><div class="fg">
+    ${acAccSel("from",accs[0].id,"จากบัญชี")}${acAccSel("to",accs[1].id,"ไปบัญชี")}
+    ${decIn("amt","จำนวนเงิน (฿)","",0.01,100000000)}${acDateIn("date","วันที่")}${acTxt("memo","รายละเอียด","","เช่น ฝากเงินสดเข้าธนาคาร","full")}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">โอน</button></div></form>`,async f=>{
+    const from=fv(f,"from"),to=fv(f,"to");if(from===to)return fieldErr(f,"to","เลือกคนละบัญชีกับต้นทาง");
+    const amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    const date=acDate(f);if(date===false)return false;
+    if(!await acEnough(from,amt))return false;
+    const ok=await acPut(uid("t"),{t:"trf",from,to,amount:amt,date,memo:fv(f,"memo"),at:now(),by:acBy()},"บันทึกการโอนแล้ว");
+    if(ok)logEv("โอนระหว่างบัญชี",`${acM(amt)} ฿`);return ok;
+  });
+}
+/* ---- count the real money and compare ---- */
+function dlgAcCount(accId){
+  const book=acBook(),accs=book.accs;if(!accs.length)return;
+  const first=accs.find(a=>a.id===accId)||accs[0];
+  openDlg(`<form novalidate><h2>บันทึกยอดเงินจริง</h2>
+    <p class="small muted" style="margin:0 0 8px">นับเงินสดในกล่อง หรือดูยอดจากแอปธนาคาร / e-Wallet แล้วใส่ที่นี่ เพื่อเทียบกับสมุดบัญชี</p><div class="fg">
+    ${acAccSel("acct",first.id,"บัญชี")}${acDateIn("date","ยอดจริง ณ วันที่")}
+    ${decIn("amt","ยอดจริงที่นับได้ (฿)","",0,100000000)}
+    <div class="f"><span>ยอดตามสมุดบัญชี</span><div class="notice" id="cntBook" style="padding:8px 12px;font-weight:700">—</div></div>
+    <div class="full notice small" id="cntDiff" hidden></div></div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึกยอดจริง</button></div></form>`,async f=>{
+    const acct=fv(f,"acct"),amt=checkDec(f,"amt",true);if(amt===false)return false;
+    const date=acDate(f);if(date===false)return false;
+    const diff=acR(amt-acBal(book,acct,date));
+    const ok=await acPut(uid("c"),{t:"cnt",acct,amount:amt,date,at:now(),by:acBy()},diff===0?"ยอดจริงตรงกับสมุดบัญชี ✓":`บันทึกยอดจริงแล้ว — ต่างจากสมุดบัญชี ${acSgn(diff)} ฿`);
+    if(ok)logEv("บันทึกยอดเงินจริง",`${acAcct(book,acct)} ${acM(amt)} ฿ (ผลต่าง ${acSgn(diff)})`);return ok;
+  });
+  const d=$("#dlg"),f=d.querySelector("form"),upd=()=>{
+    const acct=f.elements.acct.value,date=f.elements.date.value||acToday(),bal=acBal(book,acct,date),amt=f.elements.amt.value.trim().replace(",",".");
+    d.querySelector("#cntBook").textContent=acM(bal)+" ฿";
+    const df=d.querySelector("#cntDiff");
+    if(/^\d+(\.\d{1,2})?$/.test(amt)){const x=acR(+amt-bal);df.hidden=false;df.innerHTML=x===0?`<b style="color:var(--ready)">ตรงกับสมุดบัญชี ✓</b>`:`ต่างจากสมุดบัญชี <b style="color:var(--bad)">${acSgn(x)} ฿</b> — ${x>0?"เงินจริงมากกว่าสมุด (อาจลืมบันทึกรายรับ)":"เงินจริงน้อยกว่าสมุด (อาจลืมบันทึกรายจ่าย)"}`;}
+    else df.hidden=true;};
+  ["acct","date","amt"].forEach(n=>f.elements[n].addEventListener("input",upd));f.elements.acct.addEventListener("change",upd);upd();
+}
+async function acAdjust(id){
+  const book=acBook(),c=acItems("cnt").find(x=>x.id===id);if(!c)return;
+  const diff=acR(c.amount-acBal(book,c.acct,c.date));if(diff===0){toast("ตรงกับสมุดบัญชีอยู่แล้ว");return;}
+  const af=acAfterCount(book,c);
+  if(!await askConfirm({title:"ปรับสมุดบัญชีให้ตรงยอดจริง",ok:"บันทึกรายการปรับยอด",body:`<p>บัญชี “${esc(acAcct(book,c.acct))}” ยอดจริง <b>${acM(c.amount)} ฿</b> ต่างจากสมุด <b>${acSgn(diff)} ฿</b></p>${af.n?`<p class="small" style="color:var(--bad)">บันทึกหลังนับ ${af.n} รายการ (รวม ${acSgn(af.sum)} ฿) — ถ้าผลต่างนี้มาจากรายการที่เกิดหลังนับ ให้บันทึกยอดจริงใหม่แทนการปรับยอด</p>`:""}<p class="small muted">ระบบจะเพิ่มรายการ “ปรับปรุงยอด” ${acSgn(diff)} ฿ วันที่ ${esc(fmtD(c.date))} และนับเป็น${diff>0?"รายรับ":"รายจ่าย"}ในงบกำไร–ขาดทุน — ควรหาสาเหตุของผลต่างก่อน</p>`}))return;
+  const ok=await acPut(uid("j"),{t:"adj",acct:c.acct,amount:diff,date:c.date,memo:"ปรับยอดให้ตรงยอดจริง",cntId:c.id,at:now(),by:acBy()},"ปรับสมุดบัญชีแล้ว");
+  if(ok)logEv("ปรับยอดบัญชีให้ตรงยอดจริง",`${acAcct(book,c.acct)} ${acSgn(diff)} ฿`);
+}
+/* ---- funds ---- */
+function dlgAcFund(id){
+  const e=id?acItems("fund").find(x=>x.id===id):null;if(id&&!e)return;
+  openDlg(`<form novalidate><h2>${e?"แก้ไขกองกลาง":"เพิ่มกองกลาง / เงินสะสม"}</h2><div class="fg">
+    ${acTxt("name","ชื่อกอง",e&&e.name,"เช่น สำรองค่าสนาม / ซื้ออุปกรณ์ / วันคนน้อย","full")}
+    ${decIn("target","เป้าหมาย (฿ ไม่บังคับ)",e&&e.target?e.target:"",0,100000000)}${acTxt("note","หมายเหตุ",e&&e.note,"")}</div>
+    <div class="dlg-a">${e?`<button type="button" class="danger sm" data-act="acDel" data-id="${esc(e.id)}" style="margin-right:auto">ลบกองนี้</button>`:""}<button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const name=fv(f,"name");if(!name)return fieldErr(f,"name","ตั้งชื่อกอง");
+    if(acItems("fund").some(x=>x.id!==(e&&e.id)&&x.name.toLowerCase()===name.toLowerCase()))return fieldErr(f,"name","มีกองชื่อนี้แล้ว");
+    const target=checkDec(f,"target",false);if(target===false)return false;
+    return acPut(e?e.id:uid("f"),{...(e?stripId(e):{t:"fund",order:acItems("fund").length}),name,target:target||0,note:fv(f,"note")},"บันทึกกองกลางแล้ว");
+  });
+}
+function dlgAcFundMove(fid,dir){
+  const book=acBook(),f0=acFunds(book).find(x=>x.id===fid);if(!f0)return;const out=dir==="out";
+  openDlg(`<form novalidate><h2>${out?"ถอนออกจากกอง":"กันเงินเข้ากอง"} · ${esc(f0.name)}</h2>
+    <p class="small muted" style="margin:0 0 8px">${out?`ถอนออกจากกองกลับเป็นเงินใช้ทั่วไป (ไม่ใช่การจ่ายออก) · ในกองตอนนี้ ${acM(f0.bal)} ฿ — ถ้าจะจ่ายค่าใช้จ่ายจากกอง ใช้ “จ่ายจากกอง”`:`กันเงินที่มีอยู่ในบัญชีไว้ใช้ในอนาคต — เงินยังอยู่ในบัญชีเงินสด/ธนาคารตามเดิม · ในกองตอนนี้ ${acM(f0.bal)} ฿`}</p><div class="fg">
+    ${decIn("amt","จำนวนเงิน (฿)","",0.01,100000000)}${acDateIn("date","วันที่")}${acTxt("memo","หมายเหตุ","","","full")}</div>
+    <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
+    const amt=checkDec(f,"amt",true);if(amt===false)return false;if(!(amt>0))return fieldErr(f,"amt","ต้องมากกว่า 0");
+    if(out&&amt>f0.bal+0.004)return fieldErr(f,"amt",`เกินเงินในกอง (${acM(f0.bal)} ฿)`);
+    const date=acDate(f);if(date===false)return false;
+    if(!out){const free=acR(acBalAll(book)-acFunds(book).reduce((a,x)=>a+x.bal,0));
+      if(amt>free+0.004&&!await askConfirm({title:"เงินไม่พอจะกัน",ok:"กันต่อ",cancel:"กลับไปแก้",body:`<p>เงินในบัญชีทั้งหมดที่ยังไม่ได้กันมี <b>${acM(free)} ฿</b> แต่จะกัน ${acM(amt)} ฿</p>`}))return false;}
+    const ok=await acPut(uid("n"),{t:"fnd",fund:fid,amount:out?-amt:amt,date,memo:fv(f,"memo"),at:now(),by:acBy()},out?"ถอนออกจากกองแล้ว":"กันเงินเข้ากองแล้ว");
+    if(ok)logEv(out?"ถอนเงินออกจากกองกลาง":"กันเงินเข้ากองกลาง",`${f0.name} ${acM(amt)} ฿`);return ok;
+  });
+}
+/* ---- delete ---- */
+async function acDelete(id){
+  const it=(S.acct||[]).find(x=>x.id===id);if(!it)return;
+  const book=acBook(),refs=(S.acct||[]);
+  const ask=(title,body,ok)=>askConfirm({title,body,ok:ok||"ลบ",danger:true});
+  const done=async(ids,msg)=>{for(const x of ids)if(!await acRemove(x))return false;toast(msg||"ลบแล้ว");closeDlg();return true;};
+  if(it.t==="acc"){
+    const used=refs.some(x=>x.t!=="acc"&&(x.acct===id||x.from===id||x.to===id)),mapped=(Array.isArray(book.meta.maps)?book.meta.maps:[]).some(m=>m.cash===id||m.transfer===id);
+    if(acAccounts().length<=1){toast("ต้องมีอย่างน้อย 1 บัญชี");return;}
+    if(used){toast("บัญชีนี้มีรายการอยู่ — ลบไม่ได้ (ถ้าไม่ใช้แล้ว ให้โอนเงินออกให้เป็น 0)");return;}
+    if(mapped){toast("บัญชีนี้ถูกตั้งเป็นบัญชีรับเงินจากผู้เล่น — เปลี่ยนที่ “ตั้งค่า” ก่อน");return;}
+    if(!await ask("ลบบัญชี",`<p>ลบบัญชี “${esc(it.name)}” ?</p>`))return;return done([id],"ลบบัญชีแล้ว");}
+  if(it.t==="fund"){
+    const spent=refs.filter(x=>x.t==="exp"&&x.fund===id),puts=refs.filter(x=>x.t==="fnd"&&x.fund===id);
+    if(spent.length){toast("กองนี้มีรายจ่ายที่ตัดจากกองแล้ว — ลบกองไม่ได้ (ลบหรือแก้รายจ่ายเหล่านั้นก่อน)");return;}
+    if(!await ask("ลบกองกลาง",`<p>ลบกอง “${esc(it.name)}”${puts.length?` และประวัติการกันเงิน ${puts.length} รายการ`:""} ?</p><p class="small muted">เงินในกองจะกลับเป็นเงินใช้ทั่วไป (เงินในบัญชีไม่เปลี่ยน)</p>`))return;
+    return done([id,...puts.map(x=>x.id)],"ลบกองแล้ว");}
+  if(it.t==="bill"){
+    const pays=refs.filter(x=>x.t==="exp"&&x.billId===id);
+    if(pays.length){toast("บิลนี้จ่ายไปแล้วบางส่วน — ลบรายการจ่ายในหน้ารายจ่ายก่อน");return;}
+    if(!await ask("ลบรายการค้างจ่าย",`<p>ลบ “${esc(AC_EXP_NAME[it.cat]||it.cat)}${it.vendor?" · "+esc(it.vendor):""}” ${acM(it.amount)} ฿ ?</p>`))return;return done([id]);}
+  if(it.t==="adv"){
+    const rb=refs.filter(x=>x.t==="rbs"&&x.advId===id);
+    if(!await ask("ลบรายการสำรองจ่าย",`<p>ลบ “${esc(AC_EXP_NAME[it.cat]||it.cat)}” ${acM(it.amount)} ฿ ?</p>${rb.length?`<p class="small muted">รวมประวัติการคืนเงิน ${rb.length} รายการ (${acM(rb.reduce((a,x)=>a+(+x.amount||0),0))} ฿) — ยอดเงินในบัญชีที่ถูกหักไปจะกลับมา</p>`:""}`))return;
+    return done([id,...rb.map(x=>x.id)]);}
+  if(it.t==="fnd"&&(+it.amount||0)>0){const fd=acFunds(book).find(x=>x.id===it.fund);
+    if(fd&&acR(fd.bal-it.amount)<-0.004){toast("ลบรายการกันเงินนี้ไม่ได้ — เงินในกองจะติดลบ (กองนี้มีรายจ่ายที่ตัดจากกองแล้ว)");return;}}
+  const nm={exp:"รายจ่าย",inc:"รายรับ",rbs:"การคืนเงินผู้จัด",trf:"การโอนระหว่างบัญชี",adj:"รายการปรับยอด",fnd:"รายการกันเงิน"}[it.t];if(!nm)return;
+  if(!await ask(`ลบ${nm}`,`<p>ลบ${nm} ${acM(it.amount)} ฿ วันที่ ${esc(fmtD(it.date))} ?</p>${it.t==="exp"&&it.billId?`<p class="small muted">บิลที่เกี่ยวข้องจะกลับไปเป็นค้างจ่าย</p>`:""}`))return;
+  const ok=await done([id]);if(ok)logEv("ลบรายการบัญชี",`${nm} ${acM(it.amount)} ฿`);return ok;
+}
+/* ---- Excel ---- */
+async function exportAcct(){
+  if(!window.XLSX){try{await loadScript("lib/xlsx.full.min.js");}catch(e){}}
+  if(!window.XLSX){toast("ตัวสร้างไฟล์ Excel โหลดไม่สำเร็จ — ต้องออนไลน์ครั้งแรก");return;}
+  const X=XLSX.utils,wb=X.book_new(),book=acBook(),r=acRange(acPer),P=acPnl(book,r.from,r.to),R=acReceivables(),Y=acPayables(),F=acFunds(book),n2=v=>acR(v);
+  const inc=book.inc.filter(x=>x.d>=r.from&&x.d<=r.to),exp=book.exp.filter(x=>x.d>=r.from&&x.d<=r.to);
+  const rows=[["งบกำไร–ขาดทุน",r.label],[],["รายรับ"],...["member","guest","sponsor","shuttleFee","shuttleSale","noshow","other","adjIn"].map(k=>[AC_INC_NAME[k],n2(P.inc[k]||0)]),["รวมรายรับ",P.ti],[],["รายจ่าย"],...AC_EXP.map(([k,t])=>[t,n2(P.exp[k]||0)]),["ปรับปรุงยอด (เงินขาด)",n2(P.exp.adjOut||0)],["รวมรายจ่าย",P.te],[],[P.net>=0?"กำไร / เงินเหลือสุทธิ":"ขาดทุนสุทธิ",P.net]];
+  X.book_append_sheet(wb,X.aoa_to_sheet(rows),"กำไรขาดทุน");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","ประเภท","จาก / รอบ","บัญชี","รายละเอียด","จำนวน (฿)"],...inc.map(x=>[x.d,AC_INC_NAME[x.cat]||x.cat,x.auto?x.label:(x.from||""),acAcct(book,x.acct),x.auto?(x.m==="transfer"?"รับโอน":"เงินสด"):x.label,x.amt])]),"รายรับ");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","หมวด","จ่ายให้","บัญชี","สถานะ","รายละเอียด","จำนวน (฿)"],...exp.map(x=>[x.d,AC_EXP_NAME[x.cat]||x.cat,x.payee||"",x.adv?"ผู้จัดสำรองจ่าย":acAcct(book,x.acct),x.adv?"สำรองจ่าย":x.fund?"จ่ายจากกองกลาง":"จ่ายแล้ว",x.label,x.amt])]),"รายจ่าย");
+  const counts=acItems("cnt");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["บัญชี","ประเภท","ยอดยกมา","ต้นงวด","เงินรับ","เงินจ่าย","ปลายงวด (สมุด)","ยอดจริงล่าสุด","วันที่นับ","ผลต่าง"],...book.accs.map(a=>{const f=acFlow(book,a.id,r.from,r.to),c=counts.filter(x=>x.acct===a.id&&x.date<=r.to).sort((x,y)=>y.date.localeCompare(x.date)||(y.at||0)-(x.at||0))[0];
+    return [a.name,AC_KIND[a.kind]||"",a.opening||0,f.open+f.opened,f.inn,f.out,f.close,c?c.amount:"",c?c.date:"",c?n2(c.amount-acBal(book,a.id,c.date)):""];})]),"เงินสด-ธนาคาร-ตรวจสอบยอด");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["ผู้เล่น","รอบ","วันที่","ยอดเต็ม","ค้างอยู่"],...R.players.map(x=>[x.name,x.title,x.date,x.due,x.owe]),[],["ผู้จัดสำรองจ่าย รอรับคืน","หมวด","วันที่","สำรองไป","รอรับคืน"],...R.adv.map(a=>[a.who||"",AC_EXP_NAME[a.cat]||a.cat,a.date,a.amount,a.left]),[],["รวมลูกหนี้","","","",n2(R.playersTotal+R.advTotal)]]),"ลูกหนี้");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["ร้านค้า","หมวด","วันที่","กำหนดจ่าย","ยอดบิล","จ่ายแล้ว","ค้างจ่าย"],...Y.open.map(b=>[b.vendor||"",AC_EXP_NAME[b.cat]||b.cat,b.date,b.due||"",b.amount,b.paid,b.left]),[],["รวมค้างจ่าย","","","","","",Y.total]]),"เจ้าหนี้");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["กอง","เป้าหมาย","คงเหลือ","ใช้ไปแล้ว"],...F.map(f=>[f.name,f.target||"",f.bal,f.spent])]),"เงินกองกลาง");
+  saveBytes(`badminton-accounts-${r.from}_${r.to}.xlsx`,new Uint8Array(XLSX.write(wb,{bookType:"xlsx",type:"array"})));
+}
+/* ---- click router (data-act="ac…"); returns undefined when the action is not an accounts one ---- */
+function acAct(a,id,b){
+  const keep=()=>{try{localStorage.setItem(uiKey("bgo-actab"),acTab);}catch(_){}};
+  switch(a){
+    case "acTab":if(AC_TABS.some(x=>x[0]===id)){acTab=id;keep();render();}return true;
+    case "acPerK":if(["day","week","month"].includes(id)){acPer={k:id,ref:acPer.ref};acSavePer();render();}return true;
+    case "acPerGo":{const d=parseInt(id,10);acPer=d===0?{k:acPer.k,ref:acToday()}:acShift(acPer,d);acSavePer();render();return true;}
+    case "acSetup":return dlgAcSetup();
+    case "acStart":case "acMap":return dlgAcMap();
+    case "acAccount":return dlgAcAccount(id||"");
+    case "acIncome":return dlgAcIncome();
+    case "acExpense":return dlgAcExpense(id==="adv"||id==="bill"?{mode:id}:id&&id.startsWith("fund:")?{fund:id.slice(5)}:{});
+    case "acEdit":{const it=(S.acct||[]).find(x=>x.id===id);if(!it)return true;
+      if(it.t==="inc")return dlgAcIncome(id);if(["exp","adv","bill"].includes(it.t))return dlgAcExpense({e:it});return true;}
+    case "acDel":return acDelete(id);
+    case "acBillPay":return dlgAcBillPay(id);
+    case "acAdvRepay":return dlgAcAdvRepay(id);
+    case "acTransfer":return dlgAcTransfer();
+    case "acCount":return dlgAcCount(id||"");
+    case "acAdjust":return acAdjust(id);
+    case "acFundNew":return dlgAcFund(id||"");
+    case "acFundMove":{const [fid,dir]=(id||"").split("|");if(dir==="spend")return dlgAcExpense({fund:fid});return dlgAcFundMove(fid,dir);}
+    case "acRent":{const [sid,how]=(id||"").split("|"),x=acRentTodo().find(q=>q.s.id===sid);if(!x)return true;
+      return dlgAcExpense({mode:how==="bill"?"bill":"paid",cat:"rent",amount:x.amt,date:x.s.date<=acToday()?x.s.date:acToday(),memo:x.s.title||"",ref:"rent:"+sid});}
+    case "acDebtPay":{const [pid,sid]=(id||"").split("|"),e=debtLedger().find(q=>q.pid===pid&&q.sid===sid);if(!e){toast("ยอดค้างนี้ถูกปิดแล้ว");return true;}return dlgDebtPay(e);}
+    case "acGoMoney":if(id&&id!==S.sid)selectSession(id);tab="money";try{localStorage.setItem(uiKey("bgo-tab"),tab);}catch(_){}render();window.scrollTo(0,0);return true;
+    case "acExport":return exportAcct();
+  }
+  return undefined;
+}
+/* the receipts of the OPEN round are copied onto the round itself (acRc): the books keep them when the organizer moves on to another round before closing this one */
+let acSnapTimer=null;
+function acSnapOpen(flush){
+  const run=()=>{const s=curSession();if(!s||!DB.isOrg||!acOn()||s.status==="closed"||!s.date)return;
+    const pm=payModel(),rc=acReceiptsOfPay(pm,rosterModel(),s.date),ow=pm.rows.filter(r=>r.owe>0&&r.due>0).map(r=>({pid:r.id,name:r.name,due:r.due,owe:acR(r.owe),state:r.state}));
+    if(JSON.stringify(s.acRc||null)===JSON.stringify(rc)&&JSON.stringify(s.acOw||null)===JSON.stringify(ow))return;
+    return write(`sessions/${s.id}`,{...stripId(s),acRc:rc,acOw:ow});};
+  if(flush){clearTimeout(acSnapTimer);acSnapTimer=null;try{run();}catch(e){}return;}
+  if(acSnapTimer)return;acSnapTimer=setTimeout(()=>{acSnapTimer=null;try{run();}catch(e){}},2000);
+}
+/* ===== ACCOUNTS END ===== */
 
 /* ---------- settings ---------- */
 function vSettings(){
@@ -839,7 +1550,7 @@ function dlgClose(){
   const present=rosterModel().filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.checkedOutAt);
   const pm=payModel(),P=pm.pnl,unpaid=pm.rows.filter(r=>r.owe>0),owed=unpaid.reduce((a,r)=>a+r.owe,0);
   const end=sessEndEpoch(s),left=end?end-now():0;
-  const timeLine=!end?"":left>0?`<span class="chip s-warn">ยังไม่ครบเวลาจอง ${esc(s.end)} น. (อีก ${Math.ceil(left/MIN)} นาที)</span>`:`<span class="chip s-ready">ครบเวลาจอง ${esc(s.end)} น. แล้ว</span>`;
+  const timeLine=!end?"":left>0?`<span class="chip s-warn">ยังไม่ครบเวลาจอง ${esc(s.end)} น. <span data-mleft="${end}" data-mpre="(อีก " data-msuf=" นาที)">(อีก ${Math.ceil(left/MIN)} นาที)</span></span>`:`<span class="chip s-ready">ครบเวลาจอง ${esc(s.end)} น. แล้ว</span>`;
   const sign=n=>`${n<0?"−":n>0?"+":""}${baht(Math.abs(n))}`;
   openDlg(`<form novalidate><h2>ปิดรอบเล่น</h2>
     <div style="display:grid;gap:6px"><b>${esc(s.title||"รอบเล่น")}</b><span class="small muted">${esc(fmtD(s.date))} · ${esc(s.start||"")}–${esc(s.end||"")}</span>${timeLine}</div>
@@ -954,6 +1665,7 @@ function dlgSwap(m){
     const subs=[...(m.subs||[]),{at:now(),out,in:inn,reason,by:DB.meName||"ผู้จัด",...(mid?{live:true}:{})}];
     const data={...stripId(m),a:rep(m.a),b:rep(m.b),subs};if(mid&&!m.orig)data.orig={a:[...m.a],b:[...m.b]};
     const ok=await write(`sessions/${s.id}/matches/${m.id}`,data,"เปลี่ยนตัวแล้ว");
+    if(ok&&!mid){const ids=openReqsFor(data);if(ids.length)await markFulfilled(ids,m.id);}   // a game that has not started may now give an approved request what it asked for
     if(ok){if(mid&&fv(f,"leave")==="checkout"&&!matchOnCourt(data).includes(out))await rosterPatch(out,{checkedOutAt:now()});
       logEv(x.restUntil>now()?"เปลี่ยนตัว (override กฎพัก)":"เปลี่ยนตัว",`คอร์ด ${m.court}: ${nameOf(out)} → ${nameOf(inn)} · ${reason}${mid?` · ${nameOf(out)} ยังจ่ายค่าลูกเกมนี้, ${nameOf(inn)} ช่วยแทน ไม่จ่ายค่าลูก`:""}`);}
     return ok;
@@ -962,7 +1674,7 @@ function dlgSwap(m){
       n.innerHTML=`${esc(nameOf(out))} ${outPays?"<b>ยังจ่ายค่าลูก</b>ของเกมนี้ (เริ่มเกมแล้ว)":"ไม่ต้องจ่ายค่าลูกเกมนี้ (เป็นตัวแทน)"} · ${inn?esc(nameOf(inn)):"ผู้เล่นที่เข้า"} <b>ไม่ต้องจ่ายค่าลูก</b>ของเกมนี้ (ถือว่าช่วยแทน)`;};
     f.addEventListener("change",upd);upd();}
 }
-function dlgManual(){
+function dlgManual(pre){
   const s=curSession();const roster=rosterModel(),ps=playerStats(),t=now();
   const cands=roster.filter(p=>p.status==="confirmed"&&p.checkedIn&&!p.notYet&&!ps.get(p.id).inMatch);
   const opt=cands.map(p=>{const st=statusOf(p,ps,t);return `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(st.t)}</option>`;}).join("");
@@ -980,10 +1692,16 @@ function dlgManual(){
     const resting=ids.filter(id=>ps.get(id).restUntil>now());
     const reason=fv(f,"reason");
     if(resting.length&&reason.length<3)return fieldErr(f,"reason",`${resting.map(nameOf).join(", ")} ยังพักไม่ครบ ${cfg().restMin} นาที — ระบุเหตุผลเพื่อ override`);
-    const id=uid("m");
-    const ok=await write(`sessions/${s.id}/matches/${id}`,{court:fv(f,"court"),a:ids.slice(0,2),b:ids.slice(2),status:"queued",createdAt:now(),via:"manual",reqIds:[],override:resting.length?reason:""},"เพิ่มคู่เข้าคิวแล้ว");
-    if(ok)logEv(resting.length?"จัดคู่เอง (override กฎพัก)":"จัดคู่เอง",`คอร์ด ${fv(f,"court")}: ${ids.map(nameOf).join(", ")}${reason?" · "+reason:""}`);return ok;
+    const id=uid("m"),A=ids.slice(0,2),B=ids.slice(2);
+    const reqIds=openReqsFor({a:A,b:B});   // approved requests this game gives what they asked for are arranged by it
+    const ok=await write(`sessions/${s.id}/matches/${id}`,{court:fv(f,"court"),a:A,b:B,status:"queued",createdAt:now(),via:"manual",reqIds,override:resting.length?reason:""},"เพิ่มคู่เข้าคิวแล้ว");
+    if(ok){if(reqIds.length)await markFulfilled(reqIds,id);
+      logEv(resting.length?"จัดคู่เอง (override กฎพัก)":"จัดคู่เอง",`คอร์ด ${fv(f,"court")}: ${ids.map(nameOf).join(", ")}${reason?" · "+reason:""}${reqIds.length?" · ตามคำขอ":""}`);}return ok;
   });
+  // from an approved request: fill the places it asked for (the rest is left for the organizer to choose)
+  if(pre){const f=$("#dlg form");[["a1",pre.a[0]],["a2",pre.a[1]],["b1",pre.b[0]],["b2",pre.b[1]]].forEach(([n,v])=>{const el=f.elements[n];if(el&&v&&[...el.options].some(o=>o.value===v))el.value=v;});
+    const miss=[...pre.a,...pre.b].filter(id=>id&&!f.querySelector(`select[name=a1] option[value="${CSS.escape(id)}"]`));
+    if(miss.length){const n=document.createElement("div");n.className="notice warn small";n.style.margin="10px 0 0";n.textContent=`${miss.map(nameOf).join(", ")} ยังเลือกไม่ได้ (ยังไม่เช็คอิน / กำลังเล่น / ถูกจัดลงแมตช์อื่นแล้ว)`;f.querySelector(".dlg-a").before(n);}}
 }
 function dlgCfg(){
   const c=cfg();
@@ -1163,9 +1881,22 @@ async function rosterPatch(id,patch,msg){
 async function handleReq(id,status){
   const s=curSession();const r=requestModel().find(x=>x.id===id);if(!r)return;
   const d=S.decisions.find(x=>x.id===id);
-  const ok=await write(`sessions/${s.id}/decisions/${id}`,{...(d?stripId(d):{}),status,by:DB.meName||"ผู้จัด",at:now(),...(r.byOrg?{}:{owner:r.from})},status==="accepted"?"อนุมัติแล้ว — จะจัดลงแมตช์ถัดไปที่ทั้งคู่พักครบ":"ปฏิเสธแล้ว");
-  if(ok)logEv(status==="accepted"?"อนุมัติคำขอ":"ปฏิเสธคำขอ",`${nameOf(r.from)} → ${nameOf(r.to)} (${r.type==="partner"?"คู่":"คู่แข่ง"})`);
+  const retract=status==="rejected"&&r.status==="accepted";
+  // approved while a not-yet-started game already gives the request what it asked for → it is arranged right away
+  const m=status==="accepted"?S.matches.find(x=>x.status==="queued"&&reqSatisfied(r,x)):null;
+  const body={...(d?stripId(d):{}),status,by:DB.meName||"ผู้จัด",at:now(),...(r.byOrg?{}:{owner:r.from})};
+  if(m)body.fulfilled=m.id;else delete body.fulfilled;
+  if(retract)body.note="ผู้จัดเพิกถอนการอนุมัติ";
+  const ok=await write(`sessions/${s.id}/decisions/${id}`,body,status==="accepted"?(m?"อนุมัติแล้ว — คู่นี้ถูกจัดอยู่ในคิวแล้ว":"อนุมัติแล้ว — จะจัดลงแมตช์ถัดไปที่ทุกคนพักครบ"):"ไม่อนุมัติแล้ว");
+  if(ok)logEv(status==="accepted"?"อนุมัติคำขอ":(retract?"เพิกถอนคำขอ":"ไม่อนุมัติคำขอ"),reqText(r));
 }
+/* mark approved requests as arranged by a game that was just made (auto, manual or by swapping players) */
+async function markFulfilled(ids,matchId){
+  const s=curSession();
+  for(const rid of ids){const r=requestModel().find(x=>x.id===rid);const d=S.decisions.find(x=>x.id===rid)||{};
+    await write(`sessions/${s.id}/decisions/${rid}`,{...stripId(d),status:"accepted",fulfilled:matchId,...(r&&!r.byOrg?{owner:r.from}:{})});}
+}
+const openReqsFor=m=>requestModel().filter(r=>r.status==="accepted"&&!r.fulfilled&&!r.hiddenMirror&&reqSatisfied(r,m)).map(r=>r.id);
 let mutualBusy=false;
 async function autoMutualCheck(){
   if(!DB.isOrg||!cfg().autoMutual||mutualBusy)return;
@@ -1182,7 +1913,7 @@ async function exportXlsx(){
   if(!window.XLSX){try{await loadScript("lib/xlsx.full.min.js");}catch(e){}}
   if(!window.XLSX){toast("ตัวสร้างไฟล์ Excel โหลดไม่สำเร็จ — ต้องออนไลน์ครั้งแรก");return;}
   const X=XLSX.utils,wb=X.book_new(),roster=rosterModel(),ps=playerStats(),pm=payModel();
-  X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","ระดับ","สถานะ","เช็คอิน","เกม","ชนะ","แพ้","เสมอ","ช่วยแทน (เกม)","นาที"],...roster.map(p=>{const x=ps.get(p.id);return [p.name,skLabel(p.skill),p.status,p.checkedIn?"ใช่":"",x.games,x.wins,x.losses,x.draws,x.helps,x.minutes];})]),"ผู้เล่น");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","ระดับ","สถานะ","เช็คอิน","เกม","ชนะ","แพ้","เสมอ","ช่วยแทน (เกม)","เวลาที่เล่น (HH:MM)"],...roster.map(p=>{const x=ps.get(p.id);return [p.name,skLabel(p.skill),p.status,p.checkedIn?"ใช่":"",x.games,x.wins,x.losses,x.draws,x.helps,hhmm(x.minutes)];})]),"ผู้เล่น");
   X.book_append_sheet(wb,X.aoa_to_sheet([["คอร์ด","ทีมซ้าย","ทีมขวา","สถานะ","เริ่ม","จบ","ผลเกม","เซตซ้าย","เซตขวา","คะแนนรายเซต","ลูกใหม่","ลูกซ่อม","เปลี่ยนตัว"],...S.matches.map(m=>[m.court,m.a.map(nameOf).join(" + "),m.b.map(nameOf).join(" + "),m.status,m.startAt?hm(m.startAt):"",m.endAt?hm(m.endAt):"",m.status==="done"?resultText(m):"",m.setsA??"",m.setsB??"",m.score||"",m.shuttles||0,m.repair||0,(m.subs||[]).filter(x=>x.live).map(x=>nameOf(x.out)+"→"+nameOf(x.in)).join(", ")])]),"แมตช์");
   const P=pm.pnl;
   X.book_append_sheet(wb,X.aoa_to_sheet([["ชื่อ","เกม","ลูกที่เล่น","ช่วยแทน (เกม)","ออกกลางเกม (เกม)","ค่าสนาม","ค่าลูก","ยอด (฿)","สถานะ","ยอดในสลิป","ค่าปรับไม่มา","จ่ายแล้ว","ค้างจ่าย","รับเงินสด","รับโอน","เกมฟรี"],...pm.rows.map(r=>[r.name,r.games,r.myShuttles,r.helped,r.leftEarly,r.courtPart,r.shuttlePart,r.due,{paid:"จ่ายแล้ว",partial:"จ่ายบางส่วน",pending:"รอตรวจ",rejected:"สลิปไม่ผ่าน",unpaid:"ยังไม่จ่าย"}[r.state],r.slip?r.slip.amount:"",r.noShowPart,r.paidAmt,r.owe,r.cashAmt,r.transAmt,r.myFree||0])]),"ค่าใช้จ่ายผู้เล่น");
@@ -1235,6 +1966,7 @@ document.addEventListener("click",async e=>{
   const b=e.target.closest("[data-act]");if(!b||b.tagName==="SELECT"||b.type==="checkbox")return;
   const a=b.dataset.act,id=b.dataset.id,s=curSession();
   const m=id?S.matches.find(x=>x.id===id):null;
+  if(/^ac[A-Z]/.test(a)){const r=acAct(a,id,b);if(r!==undefined)return r;}
   switch(a){
     case "newSession":return dlgSession();
     case "editSession":return dlgSession(s);
@@ -1313,6 +2045,7 @@ document.addEventListener("click",async e=>{
     case "newRequest":return dlgRequest();
     case "reqAccept":return handleReq(id,"accepted");
     case "reqReject":return handleReq(id,"rejected");
+    case "reqArrange":{const r=requestModel().find(x=>x.id===id);if(!r)return;const A=[r.from,...(r.partner?[r.partner]:[])];return dlgManual({a:A,b:r.opps.slice()});}
     case "reqCancel":{const me=selfDoc(DB.uid);const rq={...(me.requests||{})};if(rq[id])rq[id]={...rq[id],cancelled:true};await write(`self/${DB.uid}`,{...stripId(me),requests:rq},"ยกเลิกคำขอแล้ว");return;}
     case "editCosts":return dlgCosts();
     case "exportXlsx":return exportXlsx();
@@ -1408,6 +2141,7 @@ function orgOnData(kind,prev){
   }
 }
 function startOrg(){
+  acLoadUi();
   try{const t=localStorage.getItem(uiKey("bgo-tab"));if(t&&TABS.some(x=>x.k===t))tab=t;}catch(e){}
   APP.render=doRender;
 }

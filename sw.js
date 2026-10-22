@@ -1,6 +1,6 @@
 /* Offline shell for the installed app: open instantly from cache, refresh files in the background.
    Data is never cached here — it lives in IndexedDB (ghstore.js) and comes from the GitHub API. */
-const C="bgo-shell-v14";
+const C="bgo-shell-v15";
 const FILES=["./","index.html","player.html","boot.js","i18n.js","i18n-en.js","license.js","license-config.js","ghstore.js","ghui.js","core.js","qrshare.js","organizer.js","player.js","style.css","fonts.css","manifest-org.json","manifest-player.json",
   "icon-192.png","icon-512.png","apple-touch-icon.png","lib/qrcode.js","lib/xlsx.full.min.js",
   "fonts/kanit-thai-500-normal.woff2","fonts/kanit-latin-500-normal.woff2","fonts/kanit-thai-600-normal.woff2","fonts/kanit-latin-600-normal.woff2","fonts/kanit-thai-700-normal.woff2","fonts/kanit-latin-700-normal.woff2",

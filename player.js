@@ -89,9 +89,9 @@ let pPrev=null;
 function pNotify(){
   const me=myId();const s=curSession();if(!me||!s)return;
   const m=S.matches.find(x=>(x.status==="queued"||x.status==="playing")&&[...x.a,...x.b].includes(me));
-  const reqs=requestModel().filter(r=>r.from===me);
+  const reqs=requestModel().filter(r=>r.members.includes(me)&&!r.hiddenMirror);   // my own requests and the ones that name me
   const rl=rosterModel();const mine=rl.find(x=>x.id===me);
-  const cur={jr:Object.fromEntries(myJoinReqs().map(r=>[r.id,r.status])),sid:s.id,match:m?`${m.id}:${m.status}`:"",req:Object.fromEntries(reqs.map(r=>[r.id,r.status])),st:mine?mine.status:"",rd:mine&&mine.status==="confirmed"?mine.round:0,slot:!!(mine&&mine.status==="reserve"&&!mine.checkedIn&&rl.openSlots)};
+  const cur={jr:Object.fromEntries(myJoinReqs().map(r=>[r.id,r.status])),sid:s.id,match:m?`${m.id}:${m.status}`:"",req:Object.fromEntries(reqs.map(r=>[r.id,r.stage])),st:mine?mine.status:"",rd:mine&&mine.status==="confirmed"?mine.round:0,slot:!!(mine&&mine.status==="reserve"&&!mine.checkedIn&&rl.openSlots)};
   if(pPrev&&pPrev.sid===cur.sid){
     let msg="";
     if(cur.st==="confirmed"&&pPrev.st==="reserve")msg=cur.rd===2?`คุณได้ที่เล่นรอบ ${s.round2Start} แล้ว`:"คุณได้เลื่อนเป็นตัวจริงแล้ว";
@@ -99,7 +99,16 @@ function pNotify(){
     if(cur.st==="noshow"&&pPrev.st!=="noshow")msg="เลยเวลาเช็คอินแล้ว — คุณเสียสิทธิ์ตัวจริง ถ้ามาถึงแล้วกดเช็คอินเพื่อรอที่ว่าง";
     if(cur.slot&&!pPrev.slot)msg="มีที่ว่างแล้ว! มาถึงสนามแล้วกดเช็คอินเพื่อได้สิทธิ์ก่อน";
     if(cur.match&&cur.match!==pPrev.match)msg=m.status==="playing"?`ถึงตาคุณแล้ว! ลงเล่นคอร์ด ${m.court} ได้เลย`:`คุณได้คิวคอร์ด ${m.court} — เตรียมตัวได้เลย`;
-    reqs.forEach(r=>{const was=pPrev.req[r.id];if(was==="pending"&&(r.status==="accepted"||r.status==="rejected"))msg=msg||`ผู้จัด${r.status==="accepted"?"อนุมัติ":"ปฏิเสธ"}คำขอ${r.type==="partner"?"คู่":"คู่แข่ง"}กับ ${nameOf(r.to)}`;});
+    reqs.forEach(r=>{const was=pPrev.req[r.id],mineR=r.from===me;
+      if(mineR){
+        if(was==="pending"&&r.stage==="approved")msg=msg||`ผู้จัดอนุมัติคำขอแล้ว — ${reqText(r)}`;
+        if(was==="pending"&&r.stage==="rejected")msg=msg||`ผู้จัดไม่อนุมัติคำขอ — ${reqText(r)}`;
+        if((was==="pending"||was==="approved")&&r.stage==="arranged")msg=msg||`จัดให้ลงแข่งเรียบร้อยแล้ว${r.match?` — คอร์ด ${r.match.court}`:""}`;}
+      else{
+        if(was===undefined&&r.stage==="pending")msg=msg||`${nameOf(r.from)} ขอเล่นกับคุณ (${r.partner===me?"เป็นคู่":"เป็นคู่แข่ง"}) — รอผู้จัดอนุมัติ`;
+        if(was==="pending"&&r.stage==="approved")msg=msg||`ผู้จัดอนุมัติคำขอของ ${nameOf(r.from)} ที่ขอเล่นกับคุณแล้ว`;
+        if(was==="pending"&&r.stage==="rejected")msg=msg||`ผู้จัดไม่อนุมัติคำขอของ ${nameOf(r.from)} ที่ขอเล่นกับคุณ`;
+        if((was==="pending"||was==="approved")&&r.stage==="arranged")msg=msg||`จัดให้ลงแข่งเรียบร้อยแล้ว — ตามคำขอของ ${nameOf(r.from)}${r.match?` คอร์ด ${r.match.court}`:""}`;}});
     myJoinReqs().forEach(r=>{const was=(pPrev.jr||{})[r.id];if(was==="pending"&&r.status==="queued")msg=msg||"ผู้จัดรับคุณเข้าคิวแล้ว!";if(was==="pending"&&r.status==="removed")msg=msg||`ผู้จัดไม่สามารถรับคุณได้${r.reason?" — "+r.reason:""}`;});
     if(msg){toast(msg);try{navigator.vibrate&&navigator.vibrate([180,80,180]);}catch(e){}}
   }
@@ -123,7 +132,7 @@ function pRender(){
   if(sel.dataset.h!==opts){sel.innerHTML=opts;sel.dataset.h=opts;}
   if(S.sid)sel.value=S.sid;
   // nav
-  const pend=requestModel().filter(r=>r.from===DB.uid&&r.status==="accepted"&&!r.fulfilled).length;
+  const pend=requestModel().filter(r=>!r.hiddenMirror&&r.members.includes(DB.uid)&&(r.stage==="approved"||(r.stage==="pending"&&r.from!==DB.uid))).length;   // approved and waiting for a game, or somebody asked to play with me
   const nav=PTABS.map(x=>`<button data-ptab="${x.k}" aria-current="${ptab===x.k?"page":"false"}"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="${x.i}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${x.t}${x.k==="req"&&pend?` <b class="dot">${pend}</b>`:""}</span></button>`).join("");
   const nv=$("#pNav");if(nv.dataset.h!==nav){nv.innerHTML=nav;nv.dataset.h=nav;}
   const v=$("#pview");
@@ -238,11 +247,16 @@ function pQueue(){
 /* ---------- ขอคู่ ---------- */
 function pReq(){
   const s=curSession();if(!s)return pNoSession();
-  const mine=requestModel().filter(r=>r.from===DB.uid||r.to===DB.uid);
-  return `<section class="panel"><div class="ph"><h2>คำขอคู่ / คู่แข่ง</h2><span class="sp"></span>${canSelf()&&mySignup(s.id)?'<button class="primary" data-pact="newRequest">+ ขอคู่ / คู่แข่ง</button>':""}</div>
-    <p class="small muted" style="margin:0 0 10px">ส่งคำขอแล้วผู้จัดเป็นผู้อนุมัติ เมื่ออนุมัติระบบจะจัดลงแมตช์ถัดไปที่ทั้งคู่พักครบ ${cfg().restMin} นาที${cfg().autoMutual?" · ถ้าอีกฝ่ายขอคุณเป็นคู่ด้วย ระบบอนุมัติให้อัตโนมัติ":""}</p>
+  const all=requestModel().filter(r=>r.members.includes(DB.uid));
+  const mine=all.filter(r=>r.from===DB.uid);
+  // requests that name me; a mutual partner request shows once, in my own list
+  const about=all.filter(r=>r.from!==DB.uid&&r.status!=="cancelled"&&!r.hiddenMirror&&!mine.some(m=>m.mutualOf===r.id||r.mutualOf===m.id));
+  const aboutBox=about.length?`<section class="panel reqabout"><div class="ph"><h2>คนที่ขอเล่นกับคุณ</h2><span class="chip s-warn">${about.length}</span></div>
+    <p class="small muted" style="margin:0 0 10px">เพื่อนในก๊วนส่งคำขอที่มีชื่อคุณ — ผู้จัดเป็นผู้อนุมัติ และจัดให้เฉพาะเกมถัดไปครั้งเดียว หลังจากนั้นจัดตามปกติ</p>${reqTable(about,false,DB.uid)}</section>`:"";
+  return aboutBox+`<section class="panel"><div class="ph"><h2>คำขอคู่ / คู่แข่ง</h2><span class="sp"></span>${canSelf()&&mySignup(s.id)?'<button class="primary" data-pact="newRequest">+ ขอคู่ / คู่แข่ง</button>':""}</div>
+    <p class="small muted" style="margin:0 0 10px">ขอได้ 2–4 คน (คู่ 1 คน + คู่แข่งไม่เกิน 2 คน) ส่งคำขอแล้วผู้จัดเป็นผู้อนุมัติ เมื่ออนุมัติระบบจะจัดลงแมตช์ถัดไปที่ทุกคนพักครบ ${cfg().restMin} นาที — ใช้ครั้งเดียว หลังจากนั้นจัดตามปกติ${cfg().autoMutual?" · ถ้าอีกฝ่ายขอเป็นคู่กลับมา ระบบอนุมัติให้อัตโนมัติ":""}</p>
     ${!mySignup(s.id)&&canSelf()?'<div class="notice">ลงชื่อรอบนี้ก่อนจึงจะส่งคำขอได้</div>':""}
-    ${mine.length?reqTable(mine,false):'<div class="empty">ยังไม่มีคำขอ</div>'}</section>`;
+    ${mine.length?reqTable(mine,false,DB.uid):'<div class="empty">ยังไม่มีคำขอ</div>'}</section>`;
 }
 
 /* ---------- จ่ายเงิน ---------- */
