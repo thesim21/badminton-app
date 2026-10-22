@@ -58,7 +58,8 @@ const I18N=(()=>{
     if(!by)build();
     let t=s;if(!keepWs&&/\s{2}|[\n\t]/.test(t))t=t.replace(/\s+/g," ");
     if(prot===null)prot=mkProt();
-    const r=prot.length?xlMask(t):xlRaw(t);
+    let r=prot.length?xlMask(t):xlRaw(t);
+    if(r!==t)r=r.replace(/(\d+) Round(?![A-Za-z])/g,(m,n)=>n+(n==="1"?" round":" rounds"));   // "3 รอบ" → "3 rounds"
     return r===t?s:r;
   }
   const mkProt=()=>{let a=[];try{a=protFn?[...protFn()]:[];}catch(e){}return [...new Set(a.map(x=>String(x||"").trim()).filter(x=>x.length>=2&&TH.test(x)))].sort((x,y)=>y.length-x.length);};

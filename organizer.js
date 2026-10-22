@@ -39,7 +39,7 @@ function doRender(){
   const fn={members:vMembers,courts:vCourts,players:vPlayers,requests:vRequests,money:vMoney,acct:vAcct,board:vBoard,stock:vStock,stats:vStats,settings:vSettings}[tab]||vCourts;
   paint(v,(DB.mode==="gh"?GHUI.tokenBar():"")+roundBanner()+fn(),tab);
   tick();
-  acSnapOpen();
+  acSnapOpen();acAutoRun();
 }
 /* bar above every tab: the booked time is almost over / over → one tap to close the round */
 function roundBanner(){
@@ -525,8 +525,8 @@ async function receiveDebt(e,amount,method){
   await setNote(e.pid,e.sid,left?{owe:left}:{owe:"",due:"",nm:"",debtAt:""});
   const ss=S.sessions.find(q=>q.id===e.sid);
   if(ss&&ss.summary){const sm={...ss.summary,owed:Math.max(0,Math.round(((+ss.summary.owed||0)-add)*100)/100)};
-    if(Array.isArray(sm.rc)||(acOn()&&(ss.date||"")<(S.acctMeta.start||""))){const nt=((S.notes.find(x=>x.id===e.pid)||{}).bySid||{})[e.sid]||{},fs=+nt.fs||0,fn=+nt.fn||0,s_=Math.round(add*fs*100)/100,n_=Math.round(add*fn*100)/100;
-      sm.rc=[...(Array.isArray(sm.rc)?sm.rc:[]),{d:acToday(),m:method==="transfer"?"transfer":"cash",k:nt.k==="g"?"g":"m",c:Math.round((add-s_-n_)*100)/100,s:s_,n:n_,late:1}];}
+    if(Array.isArray(sm.rc)||acOn()){const base=Array.isArray(sm.rc)?sm.rc:(acRcOf(ss)||[]),nt=((S.notes.find(x=>x.id===e.pid)||{}).bySid||{})[e.sid]||{},fs=+nt.fs||0,fn=+nt.fn||0,s_=Math.round(add*fs*100)/100,n_=Math.round(add*fn*100)/100;
+      sm.rc=[...base,{d:acToday(),m:method==="transfer"?"transfer":"cash",k:nt.k==="g"?"g":"m",c:Math.round((add-s_-n_)*100)/100,s:s_,n:n_,late:1}];}
     await write(`sessions/${ss.id}`,{...stripId(ss),summary:sm});}
   logEv("รับเงินค้างรอบก่อน",`${e.name} · ${fmtD(e.date)} · ${METHOD_TH[method==="transfer"?"transfer":"cash"]} ${add} ฿${left?` (ค้างอีก ${left})`:" (ครบ)"}`);
   return true;
@@ -706,7 +706,13 @@ const acTone=n=>n>0?"var(--ready)":n<0?"var(--bad)":"var(--muted)";
 const AC_EXP=[["rent","ค่าเช่าสนาม"],["shuttle","ค่าลูกแบดมินตัน"],["water","ค่าน้ำดื่ม"],["equip","ค่าอุปกรณ์ส่วนกลาง"],["other","ค่าใช้จ่ายอื่น ๆ ของก๊วน"]];
 const AC_INC_MAN=[["sponsor","เงินสนับสนุน / สปอนเซอร์"],["shuttleSale","ขายลูกแบดให้สมาชิก"],["other","รายรับอื่น ๆ"]];
 const AC_INC_NAME={member:"ค่าลงสนามจากสมาชิก",guest:"ค่าสนามจากผู้เล่น Walk-in / ผู้เล่นรับเชิญ",sponsor:"เงินสนับสนุน / สปอนเซอร์",shuttleFee:"ค่าลูกแบดที่เก็บจากผู้เล่นในเกม",shuttleSale:"ขายลูกแบดให้สมาชิก",noshow:"ค่าปรับคนไม่มา",other:"รายรับอื่น ๆ",adjIn:"ปรับปรุงยอด (เงินเกิน)"};
-const AC_EXP_NAME={rent:"ค่าเช่าสนาม",shuttle:"ค่าลูกแบดมินตัน",water:"ค่าน้ำดื่ม",equip:"ค่าอุปกรณ์ส่วนกลาง",other:"ค่าใช้จ่ายอื่น ๆ ของก๊วน",adjOut:"ปรับปรุงยอด (เงินขาด)"};
+const AC_EXP_NAME={rent:"ค่าเช่าสนาม",shuttle:"ค่าลูกแบดมินตัน",stock:"ซื้อลูกแบดเข้าสต็อก",water:"ค่าน้ำดื่ม",equip:"ค่าอุปกรณ์ส่วนกลาง",other:"ค่าใช้จ่ายอื่น ๆ ของก๊วน",adjOut:"ปรับปรุงยอด (เงินขาด)"};
+/* what the books take from the app by themselves (meta.auto): the court rent of every round, the cost of the shuttles USED in the games, the round's other costs;
+   pay = how those costs are assumed to be paid (cash / bank) */
+const AC_AUTO_DEF={rent:true,use:true,other:true,pay:"cash"};
+const acAuto=()=>({...AC_AUTO_DEF,...(((S.acctMeta||{}).auto)||{})});
+/* the categories offered when typing an expense: with the shuttle cost taken by use, buying shuttles is a stock purchase (money out, not a cost yet) */
+const acExpCats=()=>{const u=acAuto().use;return AC_EXP.filter(([k])=>k!=="shuttle"||!u).concat(u?[["stock",AC_EXP_NAME.stock]]:[]).sort((a,b)=>Object.keys(AC_EXP_NAME).indexOf(a[0])-Object.keys(AC_EXP_NAME).indexOf(b[0]));};
 const AC_KIND={cash:"เงินสด",bank:"ธนาคาร",wallet:"e-Wallet"};
 const acOn=()=>!!(S.acctMeta&&S.acctMeta.start);
 const acToday=()=>acYmd(now());
@@ -742,15 +748,53 @@ function acRcOf(ss){
   const got=Math.max(0,acR((+sm.revenue||0)-(+sm.owed||0)));
   return got>0?[{d:ss.date,m:"cash",k:"m",c:got,s:0,n:0,legacy:1}]:[];
 }
-function acReceipts(){
+function acReceipts(pm){
   const start=(S.acctMeta||{}).start||"",out=[];
   S.sessions.forEach(s=>{
     if(!s.date)return;
-    const pre=s.date<start;                                   // a round before the books started: only what is received AFTER the start counts
-    const list=s.id===S.sid&&!pre?acReceiptsOfPay(payModel(),rosterModel(),s.date):acRcOf(s);
-    (list||[]).forEach(x=>{if(x.d>=start&&(!pre||x.late))out.push({...x,sid:s.id,title:s.title||"รอบเล่น"});});
+    const list=s.id===S.sid&&pm?acReceiptsOfPay(pm,rosterModel(),s.date):acRcOf(s);
+    (list||[]).forEach(x=>{if(x.d>=start)out.push({...x,sid:s.id,title:s.title||"รอบเล่น"});});      // money received before the start day belongs to the opening balance; a late payment after it counts
   });
   return out;
+}
+/* ---- what a round costs, taken from the round itself: court rent, shuttles used (at the cost price of that round), other costs ---- */
+function acRoundCosts(s,pm){
+  const live=s.id===S.sid&&pm&&pm.pnl;
+  const rent=acR(live?pm.pnl.rent:rentTotal(s)),other=acR(live?pm.pnl.other:(+s.otherFee||0));
+  let use=null;                                               // null = not known yet (the round has not been read)
+  if(live)use=acR(pm.pnl.costNew+pm.pnl.costRepair);
+  else if(s.status==="closed"&&s.summary){const c=priceCfg(s);use=acR((+s.summary.shuttles||0)*(+c.shuttleCost||0)+(+s.summary.repair||0)*(+c.repairCost||0));}
+  else if(s.acUse!=null)use=acR(+s.acUse);
+  return {rent,use,other};
+}
+/* does the round carry everything the books need (receipts + shuttles used)? false = it has to be read once (acSweep) */
+function acRoundDetail(s){
+  if(s.id===S.sid)return true;
+  if(s.status==="closed")return !!((s.summary&&Array.isArray(s.summary.rc))||Array.isArray(s.acRc));
+  return Array.isArray(s.acRc)&&s.acUse!=null;
+}
+/* an entry the organizer typed (or skipped) replaces the automatic line of that round: refs "rent:<round>", "oth:<round>", "use:<round>" */
+function acRefs(){
+  const set=new Set(),rentDays=new Set();
+  [...acItems("exp"),...acItems("bill"),...acItems("adv"),...acItems("skp")].forEach(x=>{
+    if(x.ref)set.add(x.ref);
+    else if(x.cat==="rent"&&x.t!=="skp"&&!x.billId&&x.date)rentDays.add(x.date);          // rent typed by hand on the day of a round: that is the round's rent
+  });
+  return {set,rentDays};
+}
+/* the automatic cost lines of every round from the start day up to today */
+function acAutoLines(pm,accFor){
+  const meta=S.acctMeta||{},start=meta.start||"",today=acToday(),au=acAuto(),{set,rentDays}=acRefs(),lines=[],gaps=[],t0=now();
+  const started=s=>{if(s.status==="closed"||s.date<today)return true;const st=sessStartEpoch(s);return !st||t0>=st;};   // today's round counts from its booked start (or when it is closed)
+  S.sessions.forEach(s=>{
+    if(!s.date||s.date<start||s.date>today||!started(s))return;
+    const c=acRoundCosts(s,pm),title=s.title||"รอบเล่น";
+    const mk=(kind,cat,amt,cash)=>({id:`au|${s.id}|${kind}`,d:s.date,cat,amt:acR(amt),acct:cash?accFor(au.pay==="transfer"?"transfer":"cash",s.date):"",auto:true,autoKind:kind,cash,sid:s.id,label:title});
+    if(au.rent&&c.rent>0&&!set.has("rent:"+s.id)&&!rentDays.has(s.date))lines.push(mk("rent","rent",c.rent,true));
+    if(au.other&&c.other>0&&!set.has("oth:"+s.id))lines.push(mk("oth","other",c.other,true));
+    if(au.use){if(c.use===null)gaps.push(s.id);else if(c.use>0&&!set.has("use:"+s.id))lines.push(mk("use","shuttle",c.use,false));}
+  });
+  return {lines,gaps};
 }
 
 /* ---- the book: every income line, expense line and movement of money in an account ---- */
@@ -759,23 +803,27 @@ function acBook(){
   const maps=(Array.isArray(meta.maps)&&meta.maps.length?meta.maps:[{from:meta.start||"",cash:"",transfer:""}]).slice().sort((a,b)=>a.from.localeCompare(b.from));
   const accFor=(m,d)=>{let mp=maps[0];maps.forEach(x=>{if(x.from<=d)mp=x;});const want=m==="transfer"?mp.transfer:mp.cash;
     if(accs.some(a=>a.id===want))return want;return ((accs.find(a=>a.kind===(m==="transfer"?"bank":"cash"))||accs[0]||{}).id)||"";};
-  const inc=[],exp=[],moves=[];
-  acReceipts().forEach(x=>{const acct=accFor(x.m,x.d),tot=acR(x.c+x.s+x.n);
+  const inc=[],exp=[],moves=[],au=acAuto(),pm=curSession()?payModel():null;
+  const stk=cat=>au.use&&(cat==="shuttle"||cat==="stock");     // buying shuttles while their cost is taken by use: money out, not a cost yet
+  const catOf=cat=>cat==="stock"&&!au.use?"shuttle":cat;
+  acReceipts(pm).forEach(x=>{const acct=accFor(x.m,x.d),tot=acR(x.c+x.s+x.n);
     const add=(cat,amt)=>{if(amt>0)inc.push({id:`rc|${x.sid}|${x.d}|${x.m}|${x.k}|${cat}`,d:x.d,cat,amt:acR(amt),acct,auto:true,sid:x.sid,label:x.title,m:x.m});};
     add(x.k==="g"?"guest":"member",x.c);add("shuttleFee",x.s);add("noshow",x.n);
     if(tot>0)moves.push({d:x.d,acct,amt:tot,kind:"rc",label:x.title,auto:true,sid:x.sid});});
+  const auto=acAutoLines(pm,accFor);
+  auto.lines.forEach(l=>{exp.push(l);if(l.cash)moves.push({d:l.d,acct:l.acct,amt:-l.amt,kind:"exp",label:l.label,auto:true,sid:l.sid});});
   items.forEach(e=>{
     const a=acR(e.amount);
     if(e.t==="inc"){inc.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:e.acct,label:e.memo||"",from:e.from||"",e});moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:a,kind:"inc",label:e.memo||AC_INC_NAME[e.cat]||"",id:e.id});}
-    else if(e.t==="exp"){exp.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:e.acct,label:e.memo||"",payee:e.payee||"",fund:e.fund||"",billId:e.billId||"",ref:e.ref||"",e});moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:-a,kind:"exp",label:e.memo||AC_EXP_NAME[e.cat]||"",id:e.id});}
-    else if(e.t==="adv"){exp.push({id:e.id,d:e.date,cat:e.cat||"other",amt:a,acct:"",adv:true,label:e.memo||"",payee:e.payee||"",ref:e.ref||"",who:e.who||"",e});}
+    else if(e.t==="exp"){exp.push({id:e.id,d:e.date,cat:catOf(e.cat||"other"),amt:a,acct:e.acct,label:e.memo||"",payee:e.payee||"",fund:e.fund||"",billId:e.billId||"",ref:e.ref||"",stock:stk(e.cat),e});moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:-a,kind:"exp",label:e.memo||AC_EXP_NAME[e.cat]||"",id:e.id});}
+    else if(e.t==="adv"){exp.push({id:e.id,d:e.date,cat:catOf(e.cat||"other"),amt:a,acct:"",adv:true,label:e.memo||"",payee:e.payee||"",ref:e.ref||"",who:e.who||"",stock:stk(e.cat),e});}
     else if(e.t==="rbs"){moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:-a,kind:"rbs",label:e.memo||"คืนเงินที่ผู้จัดสำรองจ่าย",id:e.id});}
     else if(e.t==="trf"){moves.push({at:+e.at||0,d:e.date,acct:e.from,amt:-a,kind:"trf",label:e.memo||"โอนระหว่างบัญชี",id:e.id,peer:e.to},{at:+e.at||0,d:e.date,acct:e.to,amt:a,kind:"trf",label:e.memo||"โอนระหว่างบัญชี",id:e.id,peer:e.from});}
     else if(e.t==="adj"){const v=acR(e.amount);moves.push({at:+e.at||0,d:e.date,acct:e.acct,amt:v,kind:"adj",label:e.memo||"ปรับยอดให้ตรงยอดจริง",id:e.id});
       if(v>0)inc.push({id:e.id,d:e.date,cat:"adjIn",amt:v,acct:e.acct,label:e.memo||"",e});else if(v<0)exp.push({id:e.id,d:e.date,cat:"adjOut",amt:-v,acct:e.acct,label:e.memo||"",e});}
   });
   const cmp=(x,y)=>x.d.localeCompare(y.d);inc.sort(cmp);exp.sort(cmp);moves.sort(cmp);
-  return {accs,meta,inc,exp,moves};
+  return {accs,meta,inc,exp,moves,gaps:auto.gaps,au};
 }
 /* book balance of an account at the end of a day (null = today and later) */
 function acBal(book,accId,upTo){
@@ -797,10 +845,10 @@ function acFlow(book,accId,from,to){
 function acAfterCount(book,c){let n=0,sum=0;book.moves.forEach(m=>{if(m.acct===c.acct&&m.d<=c.date&&m.id&&m.at>(+c.at||0)&&m.kind!=="adj"){n++;sum+=m.amt;}});return {n,sum:acR(sum)};}
 /* what the books say about [from,to]: income and expenses by category, net */
 function acPnl(book,from,to){
-  const inc={},exp={};let ti=0,te=0;
+  const inc={},exp={};let ti=0,te=0,stock=0;
   book.inc.forEach(x=>{if(x.d<from||x.d>to)return;inc[x.cat]=acR((inc[x.cat]||0)+x.amt);ti+=x.amt;});
-  book.exp.forEach(x=>{if(x.d<from||x.d>to)return;exp[x.cat]=acR((exp[x.cat]||0)+x.amt);te+=x.amt;});
-  return {inc,exp,ti:acR(ti),te:acR(te),net:acR(ti-te)};
+  book.exp.forEach(x=>{if(x.d<from||x.d>to)return;if(x.stock){stock+=x.amt;return;}exp[x.cat]=acR((exp[x.cat]||0)+x.amt);te+=x.amt;});
+  return {inc,exp,ti:acR(ti),te:acR(te),net:acR(ti-te),stock:acR(stock)};
 }
 /* receivables: players who played but have not paid (open round live + closed rounds' notes) and what the organizer paid for the club and has not got back */
 function acReceivables(){
@@ -829,8 +877,35 @@ function acFunds(book){
 }
 /* round rent that nobody has written in the books yet (from the round's own settings) */
 function acRentTodo(){
+  if(acAuto().rent)return [];                                 // taken automatically (see acAutoLines)
   const start=(S.acctMeta||{}).start||"",today=acToday(),have=new Set([...acItems("exp"),...acItems("bill"),...acItems("adv")].map(x=>x.ref).filter(Boolean));
   return S.sessions.filter(s=>s.date&&s.date>=start&&s.date<=today&&!have.has("rent:"+s.id)).map(s=>({s,amt:acR(rentTotal(s))})).filter(x=>x.amt>0).sort((a,b)=>a.s.date.localeCompare(b.s.date));
+}
+
+/* ---- is everything of the app in the books? ---- */
+function acSyncInfo(){
+  const start=(S.acctMeta||{}).start||"",today=acToday(),rounds=[],pre=[],gaps=[];
+  S.sessions.forEach(s=>{
+    if(!s.date||s.date>today)return;
+    if(s.date<start){pre.push(s);return;}
+    rounds.push(s);if(!acRoundDetail(s))gaps.push(s);
+  });
+  const by=(a,b)=>a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0);
+  rounds.sort(by);pre.sort(by);gaps.sort(by);
+  return {start,rounds,pre,gaps,first:pre.length?pre[0].date:""};
+}
+/* one line per round: what the books took from it (receipts, rent, shuttles used, other costs) */
+function acRoundRows(book){
+  const by={};const row=sid=>by[sid]||(by[sid]={rc:0,rent:null,use:null,oth:null});
+  book.inc.forEach(x=>{if(x.auto&&x.sid)row(x.sid).rc=acR(row(x.sid).rc+x.amt);});
+  book.exp.forEach(x=>{if(x.auto&&x.sid)row(x.sid)[x.autoKind]=x.amt;});
+  const info=acSyncInfo();
+  return info.rounds.slice().reverse().map(s=>({s,...row(s.id),detail:acRoundDetail(s),live:s.id===S.sid}));
+}
+/* run fn with other books settings / items in place (nothing is written), e.g. to see what a different start day would give */
+function acWithTemp(meta,items,fn){
+  const m0=S.acctMeta,a0=S.acct;S.acctMeta=meta;if(items)S.acct=items;
+  try{return fn();}finally{S.acctMeta=m0;S.acct=a0;}
 }
 
 /* ---- periods: day / week (Mon–Sun) / month ---- */
@@ -854,7 +929,7 @@ function acDaysIn(from,to){const out=[];for(let d=acPd(from);acYmd(d)<=to;d.setD
 
 /* ---------- views ---------- */
 let acTab="inc";
-const AC_TABS=[["inc","รายรับ","Income"],["exp","รายจ่าย","Expenses"],["pnl","กำไร–ขาดทุน","Profit & Loss"],["cash","เงินสด & ธนาคาร","Cash & Bank"],["recv","ลูกหนี้","Receivables"],["pay","เจ้าหนี้","Payables"],["fund","เงินกองกลาง","Fund"],["rec","ตรวจสอบยอด","Reconciliation"]];
+const AC_TABS=[["inc","รายรับ","Income"],["exp","รายจ่าย","Expenses"],["pnl","กำไร–ขาดทุน","Profit & Loss"],["cash","เงินสด & ธนาคาร","Cash & Bank"],["recv","ลูกหนี้","Receivables"],["pay","เจ้าหนี้","Payables"],["fund","เงินกองกลาง","Fund"],["rec","ตรวจสอบยอด","Reconciliation"],["sync","ซิงก์","Sync"]];
 const acAcct=(book,id)=>{const a=book.accs.find(x=>x.id===id);return a?a.name:"—";};
 const acDShort=iso=>{if(!iso)return "";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString(LOC(),{day:"numeric",month:"short"});};
 const acPerBar=()=>{const r=acRange(acPer);
@@ -862,18 +937,19 @@ const acPerBar=()=>{const r=acRange(acPer);
     <div class="acp-n"><button type="button" class="ghost sm" data-act="acPerGo" data-id="-1" aria-label="ก่อนหน้า">‹</button><b class="acp-l">${esc(r.label)}</b><button type="button" class="ghost sm" data-act="acPerGo" data-id="1" aria-label="ถัดไป">›</button><button type="button" class="ghost sm" data-act="acPerGo" data-id="0">วันนี้</button></div></div>`;};
 const acAmt=(n,tone)=>`<span class="num" ${tone?`style="color:${tone}"`:""}>${acM(n)}</span>`;
 function acEntryRow(x,book,kind){
-  const cat=kind==="inc"?(AC_INC_NAME[x.cat]||x.cat):(AC_EXP_NAME[x.cat]||x.cat);
-  const where=x.adv?"ผู้จัดสำรองจ่าย":x.auto?`${x.m==="transfer"?"รับโอน":"เงินสด"} → ${acAcct(book,x.acct)}`:acAcct(book,x.acct);
-  const sub=[x.auto?`รอบ ${x.label}`:x.label,x.payee,x.from,where,x.fund?"จ่ายจากกองกลาง":"",x.billId?"ชำระบิลค้างจ่าย":""].filter(Boolean).map(esc).join(" · ");
+  const cat=kind==="inc"?(AC_INC_NAME[x.cat]||x.cat):(x.stock?AC_EXP_NAME.stock:(AC_EXP_NAME[x.cat]||x.cat));
+  const auX=x.auto&&kind==="exp";
+  const where=x.adv?"ผู้จัดสำรองจ่าย":auX?(x.cash?`ถือว่าจ่ายจาก ${acAcct(book,x.acct)}`:"นับตามลูกแบดที่ใช้ในเกม · ไม่ได้หักจากบัญชี"):x.auto?`${x.m==="transfer"?"รับโอน":"เงินสด"} → ${acAcct(book,x.acct)}`:acAcct(book,x.acct);
+  const sub=[x.auto?`รอบ ${x.label}`:x.label,x.payee,x.from,where,x.fund?"จ่ายจากกองกลาง":"",x.billId?"ชำระบิลค้างจ่าย":"",x.stock?"ซื้อเข้าสต็อก · ยังไม่นับเป็นต้นทุนจนกว่าจะใช้":""].filter(Boolean).map(esc).join(" · ");
   const manual=!x.auto&&x.e;
   return `<div class="acr"><span class="d num">${esc(acDShort(x.d))}</span><div class="m"><b>${esc(cat)}</b><span class="small muted">${sub}</span></div><span class="a num" style="color:${kind==="inc"?"var(--ready)":"var(--bad)"}">${kind==="inc"?"+":"−"}${acM(x.amt)}</span>
-    ${manual?`<div class="acts"><button class="ghost sm" data-act="acEdit" data-id="${esc(x.id)}">แก้ไข</button><button class="ghost sm" data-act="acDel" data-id="${esc(x.id)}">ลบ</button></div>`:x.auto?`<div class="acts"><button class="ghost sm" data-act="gotoSess" data-id="${esc(x.sid)}">ดูรอบ</button></div>`:""}</div>`;
+    ${manual?`<div class="acts"><button class="ghost sm" data-act="acEdit" data-id="${esc(x.id)}">แก้ไข</button><button class="ghost sm" data-act="acDel" data-id="${esc(x.id)}">ลบ</button></div>`:auX?`<div class="acts"><button class="ghost sm" data-act="gotoSess" data-id="${esc(x.sid)}">ดูรอบ</button>${x.autoKind!=="use"?`<button class="ghost sm" data-act="acAutoEdit" data-id="${esc(x.sid)}|${x.autoKind}">แก้ไขยอด</button>`:""}<button class="ghost sm" data-act="acAutoSkip" data-id="${esc(x.sid)}|${x.autoKind}">ข้าม</button></div>`:x.auto?`<div class="acts"><button class="ghost sm" data-act="gotoSess" data-id="${esc(x.sid)}">ดูรอบ</button></div>`:""}</div>`;
 }
 function acSetupView(){
   return `<section class="panel"><div class="ph"><h2>บัญชีของก๊วน</h2></div>
     <div class="empty" style="text-align:left;display:grid;gap:10px"><b>เริ่มทำบัญชีก๊วน</b>
     <span>บันทึกรายรับ–รายจ่าย เงินสด ธนาคาร e-Wallet ลูกหนี้ เจ้าหนี้ และเงินกองกลาง ในที่เดียว</span>
-    <span>เงินที่ผู้เล่นจ่ายในแต่ละรอบ ระบบดึงมาลงบัญชีให้เอง (แยกสมาชิก / Walk-in) ไม่ต้องคีย์ซ้ำ</span>
+    <span>เงินที่ผู้เล่นจ่ายในแต่ละรอบ ค่าเช่าสนาม ต้นทุนลูกแบดตามที่ใช้ และค่าใช้จ่ายอื่นของรอบ ระบบดึงมาลงบัญชีให้เองทุกครั้งที่มีการเคลื่อนไหวของเงิน รวมถึงรอบเก่าก่อนมีเมนูนี้ — ไม่ต้องคีย์ซ้ำ</span>
     <span>${DB.mode==="gh"?"ข้อมูลบัญชีเข้ารหัสด้วยรหัสผ่านผู้จัด ผู้เล่นมองไม่เห็น":"ข้อมูลบัญชีอยู่ในหน้าผู้จัดเท่านั้น"}</span>
     <div><button class="primary" data-act="acSetup">เริ่มใช้บัญชี</button></div></div></section>`;
 }
@@ -897,7 +973,7 @@ function acViewExp(book){
     <section class="kpis"><div class="kpi"><span class="k">รายจ่ายรวม</span><span class="v">${acM(P.te)} ฿</span><span class="s">${esc(r.label)}</span></div>
       ${AC_EXP.slice(0,3).map(([k,t])=>`<div class="kpi"><span class="k">${esc(t)}</span><span class="v">${acM(P.exp[k]||0)}</span><span class="s">฿</span></div>`).join("")}</section>
     <section class="panel"><div class="ph"><h2>รายการรายจ่าย</h2><span class="sp"></span><button class="primary" data-act="acExpense">+ บันทึกรายจ่าย</button></div>
-      <p class="small muted" style="margin:0 0 8px">จ่ายแล้วจากบัญชีก๊วน · ผู้จัดสำรองจ่ายก่อน (รอรับคืน) · หรือยังไม่ได้จ่าย (เป็นเจ้าหนี้) เลือกได้ตอนบันทึก — ค่าอุปกรณ์ส่วนกลาง ${acM(P.exp.equip||0)} ฿ · ค่าใช้จ่ายอื่น ๆ ${acM(P.exp.other||0)} ฿</p>
+      <p class="small muted" style="margin:0 0 8px">ค่าเช่าสนาม ต้นทุนลูกแบดตามที่ใช้ และค่าใช้จ่ายอื่นของแต่ละรอบ มาจากแอปโดยอัตโนมัติ (แก้ยอดหรือข้ามได้) · รายการอื่นบันทึกเองได้: จ่ายแล้ว · ผู้จัดสำรองจ่ายก่อน (รอรับคืน) · ยังไม่ได้จ่าย (เป็นเจ้าหนี้)<br>ช่วงนี้: ค่าอุปกรณ์ส่วนกลาง ${acM(P.exp.equip||0)} ฿ · ค่าใช้จ่ายอื่น ๆ ${acM(P.exp.other||0)} ฿${P.stock>0?` · ซื้อลูกแบดเข้าสต็อก ${acM(P.stock)} ฿ (เงินออกแล้ว แต่ยังไม่นับเป็นต้นทุน)`:""}</p>
       ${list.length?`<div class="aclist">${list.map(x=>acEntryRow(x,book,"exp")).join("")}</div>`:`<div class="empty">ยังไม่มีรายจ่ายในช่วงนี้</div>`}</section>`;
 }
 /* 6.3 profit & loss */
@@ -921,8 +997,8 @@ function acViewPnl(book){
         ${line("รายรับอื่น ๆ",acM(otherSum))}${otherKeys.filter(k=>P.inc[k]).map(k=>line(`<span class="muted small">· ${esc(AC_INC_NAME[k])}</span>`,`<span class="muted small">${acM(P.inc[k])}</span>`)).join("")}
         ${line("<b>รวมรายรับ</b>",`<b>${acM(P.ti)}</b>`)}
         <tr><th colspan="2">รายจ่าย</th></tr>
-        ${AC_EXP.map(([k,t])=>line(esc(t),acM(P.exp[k]||0))).join("")}${P.exp.adjOut?line(esc(AC_EXP_NAME.adjOut),acM(P.exp.adjOut)):""}
-        ${line("<b>รวมรายจ่าย</b>",`<b>${acM(P.te)}</b>`)}
+        ${AC_EXP.map(([k,t])=>line(esc(k==="shuttle"&&book.au.use?"ค่าลูกแบดมินตัน (ตามที่ใช้ในเกม)":t),acM(P.exp[k]||0))).join("")}${P.exp.adjOut?line(esc(AC_EXP_NAME.adjOut),acM(P.exp.adjOut)):""}
+        ${line("<b>รวมรายจ่าย</b>",`<b>${acM(P.te)}</b>`)}${P.stock>0?line(`<span class="muted small">ซื้อลูกแบดเข้าสต็อกในช่วงนี้ — เงินออกจากบัญชีแล้ว แต่ยังไม่นับเป็นต้นทุนจนกว่าจะใช้</span>`,`<span class="muted small">${acM(P.stock)}</span>`):""}
         <tr class="tot"><td><b style="color:${acTone(P.net)}">${P.net>=0?"กำไร / เงินเหลือสุทธิ":"ขาดทุนสุทธิ"}</b></td><td class="n"><b style="color:${acTone(P.net)};font-size:1.1rem">${acSgn(P.net)}</b></td></tr>
         <tr><th colspan="2">รายการค้างของรอบในช่วงนี้</th></tr>
         ${line("ค่าลงสนามที่ผู้เล่นยังไม่จ่าย (ลูกหนี้)",`+${acM(recvIn)}`)}${line("ค่าใช้จ่ายที่ยังไม่ได้จ่าย (เจ้าหนี้)",`−${acM(payIn)}`)}
@@ -942,7 +1018,7 @@ function acViewCash(book){
       <div class="accards">${book.accs.map(a=>{const bal=acBal(book,a.id),c=lastCnt(a.id),diff=c?acR(c.amount-acBal(book,a.id,c.date)):null;
         return `<article class="accard"><div class="pn"><b>${esc(a.name)}</b><span class="chip s-off">${esc(AC_KIND[a.kind]||a.kind)}</span></div>
           <div class="big num">${acM(bal)} <small>฿</small></div>
-          <div class="small muted">ยอดยกมา ${acM(a.opening||0)} ฿ · ตั้งแต่ ${esc(acDShort(a.openDate||""))}</div>
+          <div class="small muted">ยอดยกมา ${acM(a.opening||0)} ฿ · ตั้งแต่ ${esc(acDShort(a.openDate||""))}${a.plug?" · คำนวณย้อนจากยอดเงินจริง":""}</div>
           <div class="small">${c?`ยอดจริงล่าสุด ${acM(c.amount)} ฿ (${esc(acDShort(c.date))}) · ${diff===0?'<span style="color:var(--ready)">ตรงกับสมุดบัญชี</span>':`<span style="color:var(--bad)">ต่างจากสมุดบัญชี ${acSgn(diff)} ฿</span>`}`:'<span class="muted">ยังไม่เคยบันทึกยอดจริง</span>'}</div>
           <div class="acts"><button class="sm" data-act="acCount" data-id="${esc(a.id)}">บันทึกยอดจริง</button><button class="ghost sm" data-act="acAccount" data-id="${esc(a.id)}">แก้ไข</button></div></article>`;}).join("")}</div></section>
     <section class="panel"><div class="ph"><h2>รับเงินจากผู้เล่นเข้าบัญชีไหน</h2></div>
@@ -1024,14 +1100,49 @@ function acViewRec(book){
         </tbody></table></div>
         <div class="acts"><button class="sm" data-act="acCount" data-id="${esc(a.id)}">บันทึกยอดจริง</button>${c&&diff!==0?`<button class="ghost sm" data-act="acAdjust" data-id="${esc(c.id)}">ปรับสมุดบัญชีให้ตรงยอดจริง</button>`:""}</div></article>`).join("")}</div></section>`;
 }
+/* bar over every tab: rounds being read, or waiting to be read / brought into the books */
+function acSyncBar(){
+  if(acRun)return `<div class="notice small acsync" role="status" style="margin:0 0 10px">กำลังซิงก์ข้อมูลย้อนหลังเข้าสมุดบัญชี… รอบที่ ${acRun.i} จาก ${acRun.n} <button class="ghost sm" data-act="acSyncStop">หยุด</button></div>`;
+  const info=acSyncInfo(),out=[];
+  if(info.pre.length)out.push(`รอบเล่นก่อนวันเริ่มทำบัญชีที่ยังไม่ได้อยู่ในสมุดบัญชี: <b>${info.pre.length} รอบ</b> (ตั้งแต่ ${esc(fmtD(info.first))}) <button class="primary sm" data-act="acMove">ซิงก์ย้อนหลัง</button>`);
+  if(info.gaps.length)out.push(`รอบที่ยังไม่ได้อ่านรายละเอียดเข้าสมุดบัญชี: <b>${info.gaps.length} รอบ</b> <button class="sm" data-act="acSync">ซิงก์ตอนนี้</button>`);
+  return out.map(h=>`<div class="notice small acsync" style="margin:0 0 10px">${h}</div>`).join("");
+}
+/* the "sync" tab: is everything the app knows in the books, what is taken automatically, round by round */
+function acViewSync(book){
+  const info=acSyncInfo(),au=book.au,rows=acRoundRows(book),skp=acItems("skp").slice().sort((a,b)=>b.date.localeCompare(a.date)),ok=!info.pre.length&&!info.gaps.length&&!book.gaps.length;
+  const sum=k=>acR(rows.reduce((a,r)=>a+(+r[k]||0),0));
+  const seg=(k,on,a,b,v1,v0)=>`<div><div class="seg" role="group" aria-label="${esc(k)}"><button type="button" data-act="acAutoSet" data-id="${k}|${v1||1}" aria-pressed="${on}">${a}</button><button type="button" data-act="acAutoSet" data-id="${k}|${v0||0}" aria-pressed="${!on}">${b}</button></div></div>`;
+  const row=(t,sub,ctl)=>`<div class="acset"><div class="m"><b>${t}</b><span class="small muted">${sub}</span></div>${ctl}</div>`;
+  const st=r=>r.live?`<span class="chip s-ready">ซิงก์สด</span>`:r.detail?`<span class="chip s-ready">ซิงก์แล้ว</span>`:`<span class="chip s-warn">ยังไม่ได้อ่าน</span>`;
+  const dash=v=>v==null?"—":acM(v);
+  return `<section class="kpis"><div class="kpi" style="border-color:${ok?"var(--ready)":"var(--warn,var(--line))"}"><span class="k">สถานะ</span><span class="v" style="font-size:1.05rem">${ok?"ซิงก์ครบแล้ว ✓":"ยังมีรายการที่ต้องซิงก์"}</span><span class="s">${rows.length} รอบตั้งแต่ ${esc(fmtD(info.start))}</span></div>
+      <div class="kpi"><span class="k">รอบที่ยังไม่ได้อ่านรายละเอียด</span><span class="v">${info.gaps.length}</span><span class="s"></span></div>
+      <div class="kpi"><span class="k">รอบก่อนวันเริ่มบัญชี</span><span class="v">${info.pre.length}</span><span class="s">${info.pre.length?`ตั้งแต่ ${esc(fmtD(info.first))}`:""}</span></div></section>
+    <section class="panel"><div class="ph"><h2>ซิงก์กับแอป</h2><span class="sp"></span><button class="primary" data-act="acSync">ตรวจสอบและซิงก์ตอนนี้</button>${info.pre.length?`<button data-act="acMove">ซิงก์รอบก่อนวันเริ่ม</button>`:""}</div>
+      <p class="small" style="margin:0 0 8px">ทุกครั้งที่เงินเคลื่อนไหวในแอป สมุดบัญชีตามให้เอง: เงินที่ผู้เล่นจ่าย (รวมที่จ่ายทีหลัง) · ค่าเช่าสนาม · ต้นทุนลูกแบดตามที่ใช้ในเกม · ค่าใช้จ่ายอื่นของรอบ · ซื้อลูกแบดเข้าสต็อก (ใส่ราคาตอนเพิ่มสต็อก)</p>
+      <p class="small muted" style="margin:0">ระบบตรวจรอบเก่าให้เองเป็นระยะ ถ้าพบรอบที่ยังไม่ได้เข้าสมุดจะอ่านและซิงก์ให้ — การอ่านย้อนหลังไม่แก้ข้อมูลผู้เล่น คะแนน หรือการรับเงินของรอบนั้น</p></section>
+    <section class="panel"><div class="ph"><h2>รายการที่ซิงก์อัตโนมัติ</h2></div>
+      <div class="aclist">
+        ${row("ค่าเช่าสนาม","ตามค่าเช่า × คอร์ด × ชั่วโมงของแต่ละรอบ · ลงวันที่ของรอบ",seg("rent",au.rent,"อัตโนมัติ","บันทึกเอง"))}
+        ${row("ต้นทุนลูกแบดตามที่ใช้","ลูกที่ใช้จริงในเกม × ราคาทุนในตั้งค่า (ตรงกับกำไรรอบ) · ไม่ได้หักจากบัญชี · ซื้อลูกแบดเข้าสต็อกเป็นเงินออกที่ยังไม่นับเป็นต้นทุน",seg("use",au.use,"ตามที่ใช้","บันทึกเอง"))}
+        ${row("ค่าใช้จ่ายอื่นของรอบ","ช่อง “ค่าใช้จ่ายอื่น” ในต้นทุนของแต่ละรอบ",seg("other",au.other,"อัตโนมัติ","บันทึกเอง"))}
+        ${row("ค่าเช่าและค่าใช้จ่ายของรอบถือว่าจ่ายด้วย",(au.pay==="transfer"?"หักจากบัญชีรับเงินโอนของก๊วน — ถ้าจริงต่างจากนี้ กด “แก้ไขยอด” หรือ “ข้าม” ที่รายการ":"หักจากบัญชีรับเงินสดของก๊วน — ถ้าจริงต่างจากนี้ กด “แก้ไขยอด” หรือ “ข้าม” ที่รายการ"),seg("pay",au.pay!=="transfer","เงินสด","โอนธนาคาร","cash","transfer"))}
+      </div></section>
+    <section class="panel"><div class="ph"><h2>รอบเล่นที่ซิงก์</h2><span class="muted small">${rows.length} รอบ${rows.length>40?" · แสดง 40 รอบล่าสุด":""}</span></div>
+      ${rows.length?`<div class="aclist">${rows.slice(0,40).map(r=>`<div class="acr"><span class="d num">${esc(acDShort(r.s.date))}</span><div class="m"><b>${esc(r.s.title||"รอบเล่น")}</b><span class="small muted">รับจากผู้เล่น ${acM(r.rc)} · ค่าเช่า ${dash(r.rent)} · ลูกแบดที่ใช้ ${dash(r.use)} · อื่น ๆ ${dash(r.oth)}</span></div><span>${st(r)}</span></div>`).join("")}
+        <div class="acr"><span></span><div class="m"><b>รวม ${rows.length} รอบ</b><span class="small muted">รับจากผู้เล่น ${acM(sum("rc"))} · ค่าเช่า ${acM(sum("rent"))} · ลูกแบดที่ใช้ ${acM(sum("use"))} · อื่น ๆ ${acM(sum("oth"))}</span></div></div></div>
+        <p class="small muted" style="margin:8px 0 0">“—” = ไม่มีรายการนั้นในรอบนี้ (ไม่มียอด ถูกข้าม หรือบันทึกเองแล้ว)</p>`:`<div class="empty">ยังไม่มีรอบเล่นตั้งแต่วันเริ่มทำบัญชี</div>`}</section>
+    ${skp.length?`<section class="panel"><div class="ph"><h2>รายการที่ข้าม</h2></div><div class="aclist">${skp.map(x=>`<div class="acr"><span class="d num">${esc(acDShort(x.date))}</span><div class="m"><b>${esc({rent:"ค่าเช่าสนาม",oth:"ค่าใช้จ่ายอื่นของรอบ",use:"ต้นทุนลูกแบดตามที่ใช้"}[x.kind]||x.kind)}</b><span class="small muted">${esc(x.memo||"")}</span></div><span class="a num muted">${acM(x.amount)}</span><div class="acts"><button class="ghost sm" data-act="acUnskip" data-id="${esc(x.id)}">เอากลับเข้าบัญชี</button></div></div>`).join("")}</div></section>`:""}`;
+}
 function vAcct(){
   if(!DB.isOrg)return `<section class="panel"><div class="empty">เมนูนี้สำหรับผู้จัดก๊วนเท่านั้น</div></section>`;
   if(!acOn())return acSetupView();
   const book=acBook();
   const nav=`<div class="acnav" role="tablist" aria-label="หัวข้อบัญชี">${AC_TABS.map(([k,t,e])=>`<button type="button" role="tab" data-act="acTab" data-id="${k}" aria-selected="${acTab===k}">${I18N.lang==="en"?e:t}</button>`).join("")}</div>`;
   const head=`<div class="ph" style="margin:0 0 8px"><span class="muted small">เริ่มทำบัญชีตั้งแต่ ${esc(fmtD(S.acctMeta.start))}</span><span class="sp"></span><span class="acts"><button class="ghost sm" data-act="acExport">ส่งออก Excel</button><button class="ghost sm" data-act="acStart">ตั้งค่า</button></span></div>`;
-  const fn={inc:acViewInc,exp:acViewExp,pnl:acViewPnl,cash:acViewCash,recv:acViewRecv,pay:acViewPay,fund:acViewFund,rec:acViewRec}[acTab]||acViewInc;
-  return `<div class="acwrap">${head}${nav}${fn(book)}</div>`;
+  const fn={inc:acViewInc,exp:acViewExp,pnl:acViewPnl,cash:acViewCash,recv:acViewRecv,pay:acViewPay,fund:acViewFund,rec:acViewRec,sync:acViewSync}[acTab]||acViewInc;
+  return `<div class="acwrap">${head}${acSyncBar()}${nav}${fn(book)}</div>`;
 }
 
 /* ---------- dialogs and actions ---------- */
@@ -1063,16 +1174,20 @@ async function acEnough(accId,amount,back){
   return askConfirm({title:"ยอดในบัญชีไม่พอ",ok:"บันทึกต่อ",cancel:"กลับไปแก้",body:`<p>บัญชี “${esc(a?a.name:"")}” มีตามสมุด <b>${acM(bal)} ฿</b> แต่รายการนี้ ${acM(amount)} ฿</p><p class="small muted">ถ้าสมุดบัญชียังไม่ครบ (ลืมบันทึกเงินเข้า) ให้บันทึกต่อได้ แล้วค่อยตรวจสอบยอดที่เมนู “ตรวจสอบยอด”</p>`});
 }
 
-/* first time: start date + the accounts the club keeps money in */
+/* first time: start day (by default the first round the app has) + the accounts the club keeps money in.
+   Everything the app knows from the start day on is put in the books by the system: what players paid, court rent, shuttles used, the round's other costs.
+   The balances typed are the REAL money the club has now: the opening balance of each account is worked out backwards from them. */
 function dlgAcSetup(){
-  const t=acToday();
+  const t=acToday(),days=S.sessions.filter(s=>s.date&&s.date<=t).map(s=>s.date).sort(),first=days[0]||t;
   openDlg(`<form novalidate><h2>เริ่มทำบัญชีก๊วน</h2>
-    <p class="small muted" style="margin:0 0 10px">ใส่ยอดเงินที่ก๊วนมีอยู่ ณ วันเริ่มต้น (ก่อนเริ่มวันนั้น) — ระบบนับเงินรับ–จ่ายตั้งแต่วันเริ่มเป็นต้นไป รอบเล่นที่มีวันที่ก่อนวันเริ่มจะไม่ถูกนับ</p>
-    <div class="fg"><label class="f full">วันเริ่มทำบัญชี<input type="date" name="start" value="${t}" max="${t}" required><span class="ferr"></span></label>
-    ${acTxt("n1","บัญชีที่ 1 · เงินสด",TT("เงินสด"),"")}${decIn("o1","ยอดยกมา (฿)","0",0,100000000)}
-    ${acTxt("n2","บัญชีที่ 2 · ธนาคาร (เว้นว่างถ้าไม่มี)",TT("บัญชีธนาคาร"),"ชื่อธนาคาร")}${decIn("o2","ยอดยกมา (฿)","0",0,100000000)}
-    ${acTxt("n3","บัญชีที่ 3 · e-Wallet (ไม่บังคับ)","","เช่น TrueMoney")}${decIn("o3","ยอดยกมา (฿)","0",0,100000000)}</div>
-    <p class="small muted" style="margin:10px 0 0">เงินโอนจากผู้เล่นจะเข้าบัญชีธนาคาร (หรือ e-Wallet ถ้าไม่มีธนาคาร) เงินสดเข้าบัญชีเงินสด — เปลี่ยนได้ภายหลัง</p>
+    <p class="small" style="margin:0 0 6px">${days.length?`พบรอบเล่นในแอป ${days.length} รอบ ตั้งแต่ <b>${esc(fmtD(first))}</b> — `:""}ระบบดึงรายรับ–ค่าใช้จ่ายของทุกรอบตั้งแต่วันเริ่มเข้าสมุดบัญชีให้เองทั้งหมด (ค่าลงสนามจากผู้เล่น ค่าเช่าสนาม ต้นทุนลูกแบดตามที่ใช้ ค่าใช้จ่ายอื่นของรอบ)</p>
+    <p class="small muted" style="margin:0 0 10px">กรอก <b>ยอดเงินจริงที่ก๊วนมีอยู่ตอนนี้</b> ของแต่ละบัญชี — ระบบคำนวณยอดยกมา ณ วันเริ่มให้เอง</p>
+    <div class="fg"><label class="f full">วันเริ่มทำบัญชี<input type="date" name="start" value="${first}" max="${t}" required><span class="ferr"></span></label>
+    ${acTxt("n1","บัญชีที่ 1 · เงินสด",TT("เงินสด"),"")}${decIn("o1","ยอดเงินจริงตอนนี้ (฿)","0",0,100000000)}
+    ${acTxt("n2","บัญชีที่ 2 · ธนาคาร (เว้นว่างถ้าไม่มี)",TT("บัญชีธนาคาร"),"ชื่อธนาคาร")}${decIn("o2","ยอดเงินจริงตอนนี้ (฿)","0",0,100000000)}
+    ${acTxt("n3","บัญชีที่ 3 · e-Wallet (ไม่บังคับ)","","เช่น TrueMoney")}${decIn("o3","ยอดเงินจริงตอนนี้ (฿)","0",0,100000000)}</div>
+    <p class="small muted" style="margin:10px 0 0">เงินโอนจากผู้เล่นจะเข้าบัญชีธนาคาร (หรือ e-Wallet ถ้าไม่มีธนาคาร) เงินสดเข้าบัญชีเงินสด · ค่าเช่าสนามและค่าใช้จ่ายของรอบถือว่าจ่ายด้วยเงินสด — เปลี่ยนได้ที่ “ตั้งค่า”</p>
+    <div class="notice small acprog" role="status" hidden></div>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">เริ่มใช้บัญชี</button></div></form>`,async f=>{
     const start=fv(f,"start");if(!/^\d{4}-\d\d-\d\d$/.test(start)||isNaN(acPd(start)))return fieldErr(f,"start","เลือกวันที่");
     if(start>acToday())return fieldErr(f,"start","เลือกวันที่เป็นอนาคตไม่ได้");
@@ -1082,27 +1197,45 @@ function dlgAcSetup(){
     const n3=fv(f,"n3"),o3=checkDec(f,"o3",false);if(o3===false)return false;
     const list=[["cash",n1,o1||0],["bank",n2,o2||0],["wallet",n3,o3||0]].filter(x=>x[1]);
     const names=list.map(x=>x[1].toLowerCase());if(new Set(names).size!==names.length)return fieldErr(f,"n2","ชื่อบัญชีซ้ำกัน");
-    const ids={};let order=0;
-    for(const [kind,name,open] of list){const id=uid("a");ids[kind]=id;
-      if(!await acPut(id,{t:"acc",kind,name,opening:acR(open),openDate:start,order:order++}))return false;}
-    const ok=await write("private/acct/meta/main",{start,maps:[{from:start,cash:ids.cash,transfer:ids.bank||ids.wallet||ids.cash}],at:now(),by:acBy()},"เริ่มทำบัญชีแล้ว");
+    const ids={};list.forEach(([kind])=>{ids[kind]=uid("a");});
+    const meta={start,maps:[{from:start,cash:ids.cash,transfer:ids.bank||ids.wallet||ids.cash}],auto:{...AC_AUTO_DEF}};
+    /* 1) read the rounds the books have not seen yet (so the opening balances are worked out from the complete history) */
+    const prog=f.querySelector(".acprog"),gaps=acWithTemp(meta,[],()=>acSyncInfo()).gaps;
+    if(gaps.length){prog.hidden=false;
+      const r=await acSweep(gaps,(i,n)=>{prog.textContent=`กำลังอ่านรอบเล่นย้อนหลัง ${i} / ${n} …`;});
+      if(r.cancelled||r.fail){prog.textContent=`อ่านรอบเล่นไม่ครบ (${r.fail?`ไม่สำเร็จ ${r.fail} รอบ`:"ถูกหยุด"}) — กดเริ่มใช้บัญชีอีกครั้ง`;return false;}}
+    /* 2) opening balance of every account = the real balance now − everything that moved since the start day */
+    const accs=list.map(([kind,name,open],i)=>({id:ids[kind],t:"acc",kind,name,opening:0,openDate:start,order:i,_real:open}));
+    const flow=acWithTemp(meta,accs.map(a=>({...a})),()=>{const b=acBook(),o={};accs.forEach(a=>{o[a.id]=acBal(b,a.id);});return o;});
+    for(const a of accs){const real=a._real,o={t:"acc",kind:a.kind,name:a.name,opening:acR(real-flow[a.id]),openDate:start,order:a.order};if(acR(flow[a.id])!==0)o.plug=true;
+      if(!await acPut(a.id,o))return false;}
+    const ok=await write("private/acct/meta/main",{...meta,at:now(),by:acBy()},"เริ่มทำบัญชีแล้ว");
     if(ok){acTab="inc";logEv("เริ่มทำบัญชีก๊วน",`เริ่ม ${fmtD(start)}`);acSnapOpen();}
     return ok;
   });
 }
-/* where money players pay is booked */
+/* settings: where money players pay is booked + what the books take from the app by themselves */
 function dlgAcMap(){
-  const book=acBook(),cur=k=>acMapNow(book,k);
+  const book=acBook(),cur=k=>acMapNow(book,k),au=acAuto();
+  const ck=(n,t,on)=>`<label class="ck full"><input type="checkbox" name="${n}"${on?" checked":""}><span>${t}</span></label>`;
   openDlg(`<form novalidate><h2>ตั้งค่าบัญชี</h2>
     <p class="small muted" style="margin:0 0 10px">เริ่มทำบัญชีตั้งแต่ <b>${esc(fmtD((S.acctMeta||{}).start||""))}</b></p>
     <div class="fg">${acAccSel("cash",cur("cash"),"ผู้เล่นจ่ายเงินสด → เข้าบัญชี")}${acAccSel("transfer",cur("transfer"),"ผู้เล่นโอน → เข้าบัญชี")}</div>
     <p class="small muted" style="margin:10px 0 0">มีผลกับเงินที่รับวันนี้ (รวมที่รับไปแล้ววันนี้) และต่อจากนี้ · รายการของวันก่อนหน้าอยู่บัญชีเดิม</p>
+    <h3 style="margin:14px 0 6px">ซิงก์ค่าใช้จ่ายของแต่ละรอบเข้าบัญชีอัตโนมัติ</h3>
+    <div class="fg">${ck("aRent","ค่าเช่าสนามของทุกรอบ",au.rent)}${ck("aUse","ต้นทุนลูกแบดตามที่ใช้จริงในเกม (ตามราคาทุนที่ตั้งไว้)",au.use)}${ck("aOther","ค่าใช้จ่ายอื่นของรอบ",au.other)}
+    <label class="f full">ถือว่าจ่ายด้วย<select name="aPay"><option value="cash"${au.pay!=="transfer"?" selected":""}>เงินสด</option><option value="transfer"${au.pay==="transfer"?" selected":""}>โอนธนาคาร</option></select></label></div>
+    <p class="small muted" style="margin:8px 0 0">ถ้าจ่ายจริงต่างจากที่ระบบคิด กด “แก้ไขยอด” ที่รายการในแท็บรายจ่าย หรือ “ข้าม” รอบที่ไม่ได้จ่าย · เมื่อเปิดต้นทุนลูกแบดตามที่ใช้ การซื้อลูกแบดจะเป็นเงินออกจากบัญชีที่ยังไม่นับเป็นต้นทุนจนกว่าจะใช้</p>
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
     const meta=S.acctMeta||{},t=acToday(),c=fv(f,"cash"),tr=fv(f,"transfer");
-    if(c===cur("cash")&&tr===cur("transfer"))return true;
-    let maps=(Array.isArray(meta.maps)?meta.maps:[]).filter(x=>x.from!==t);
-    maps.push({from:t<meta.start?meta.start:t,cash:c,transfer:tr});
-    return write("private/acct/meta/main",{...stripId(meta),maps},"บันทึกแล้ว");
+    const next={rent:f.elements.aRent.checked,use:f.elements.aUse.checked,other:f.elements.aOther.checked,pay:fv(f,"aPay")==="transfer"?"transfer":"cash"};
+    const sameMap=c===cur("cash")&&tr===cur("transfer"),sameAuto=JSON.stringify(next)===JSON.stringify({rent:au.rent,use:au.use,other:au.other,pay:au.pay});
+    if(sameMap&&sameAuto)return true;
+    let maps=Array.isArray(meta.maps)?meta.maps.slice():[];
+    if(!sameMap){maps=maps.filter(x=>x.from!==t);maps.push({from:t<meta.start?meta.start:t,cash:c,transfer:tr});}
+    const ok=await write("private/acct/meta/main",{...stripId(meta),maps,auto:next},"บันทึกแล้ว");
+    if(ok&&!sameAuto)logEv("ตั้งค่าซิงก์บัญชี",`เช่า ${next.rent?"อัตโนมัติ":"บันทึกเอง"} · ลูกแบด ${next.use?"ตามที่ใช้":"บันทึกเอง"} · อื่น ๆ ${next.other?"อัตโนมัติ":"บันทึกเอง"}`);
+    return ok;
   });
 }
 /* an account of the club: cash box, bank, e-wallet */
@@ -1141,13 +1274,14 @@ function dlgAcIncome(id){
 /* ---- expense: paid from the club's money / paid first by the organizer / not paid yet ---- */
 function dlgAcExpense(opt){
   opt=opt||{};const e=opt.e||null,mode0=e?(e.t==="adv"?"adv":e.t==="bill"?"bill":"paid"):(opt.mode||"paid");
-  const book=acBook(),F=acFunds(book),locked=!!e,cat0=(e&&e.cat)||opt.cat||"rent",amt0=e?e.amount:(opt.amount||"");
+  const book=acBook(),F=acFunds(book),locked=!!e,amt0=e?e.amount:(opt.amount||"");
+  const cats=acExpCats(),cat1=(e&&e.cat)||opt.cat||"rent",cat0=cats.some(c=>c[0]===cat1)?cat1:(cat1==="shuttle"?"stock":cat1==="stock"?"shuttle":"other");
   const date0=e?e.date:(opt.date||acToday()),memo0=e?e.memo:(opt.memo||""),payee0=e?(e.payee||e.vendor||""):(opt.payee||"");
   const rd=(v,t,s)=>`<label class="rd"><input type="radio" name="mode" value="${v}"${mode0===v?" checked":""}><span><b>${t}</b><span class="small muted">${s}</span></span></label>`;
   const paidAmt=e&&e.t==="bill"?acPayables().bills.find(b=>b.id===e.id).paid:0,repaid=e&&e.t==="adv"?acR(acItems("rbs").filter(r=>r.advId===e.id).reduce((a,r)=>a+(+r.amount||0),0)):0;
   openDlg(`<form novalidate><h2>${e?"แก้ไขรายจ่าย":"บันทึกรายจ่าย"}</h2>
     ${locked?`<input type="hidden" name="mode" value="${mode0}">`:`<div style="display:grid;gap:8px;margin:0 0 10px" role="radiogroup" aria-label="สถานะการจ่าย">${rd("paid","จ่ายแล้ว","จ่ายจากเงินสด / ธนาคาร / e-Wallet ของก๊วน")}${rd("adv","ผู้จัดสำรองจ่ายไปก่อน","ก๊วนยังไม่ได้คืนเงิน — ไปอยู่ในลูกหนี้ (รอรับคืน)")}${rd("bill","ยังไม่ได้จ่าย","ค้างจ่าย — ไปอยู่ในเจ้าหนี้ จ่ายทีหลังได้")}</div>`}
-    <div class="fg"><label class="f full">หมวด<select name="cat">${AC_EXP.map(([k,t])=>`<option value="${k}"${cat0===k?" selected":""}>${esc(t)}</option>`).join("")}</select></label>
+    <div class="fg"><label class="f full">หมวด<select name="cat">${cats.map(([k,t])=>`<option value="${k}"${cat0===k?" selected":""}>${esc(t)}</option>`).join("")}</select></label>
     ${decIn("amt","จำนวนเงิน (฿)",amt0,0.01,100000000)}${acDateIn("date",locked&&mode0==="bill"?"วันที่ของบิล":"วันที่",date0)}
     <div class="full fg" data-mg="paid" style="padding:0">${acAccSel("acct",e&&e.acct||acMapNow(book,"cash"),"จ่ายจากบัญชี")}${F.length?`<label class="f">ตัดจากเงินกองกลาง<select name="fund"><option value="">ไม่ตัด</option>${F.map(x=>`<option value="${esc(x.id)}"${e&&e.fund===x.id||opt.fund===x.id?" selected":""}>${esc(x.name)} (เหลือ ${acM(x.bal)})</option>`).join("")}</select><span class="ferr"></span></label>`:""}</div>
     <div class="full fg" data-mg="adv" style="padding:0" hidden>${acTxt("who","ผู้สำรองจ่าย",e&&e.who||acBy(),"")}</div>
@@ -1329,16 +1463,30 @@ async function acDelete(id){
   if(!await ask(`ลบ${nm}`,`<p>ลบ${nm} ${acM(it.amount)} ฿ วันที่ ${esc(fmtD(it.date))} ?</p>${it.t==="exp"&&it.billId?`<p class="small muted">บิลที่เกี่ยวข้องจะกลับไปเป็นค้างจ่าย</p>`:""}`))return;
   const ok=await done([id]);if(ok)logEv("ลบรายการบัญชี",`${nm} ${acM(it.amount)} ฿`);return ok;
 }
+/* ---- an automatic line the organizer does not want (round not played, rent not paid …) ---- */
+async function acSkip(l){
+  const kn={rent:"ค่าเช่าสนาม",oth:"ค่าใช้จ่ายอื่นของรอบ",use:"ต้นทุนลูกแบดตามที่ใช้"}[l.autoKind];
+  if(!await askConfirm({title:"ข้ามรายการนี้",ok:"ข้าม",body:`<p>${esc(kn)} ${acM(l.amt)} ฿ · รอบ ${esc(l.label)} (${esc(fmtD(l.d))})</p><p class="small muted">รายการนี้จะไม่นับในสมุดบัญชี (ยกเลิกการข้ามได้ที่แท็บ “ซิงก์”)</p>`}))return true;
+  const ok=await acPut(uid("k"),{t:"skp",ref:`${l.autoKind}:${l.sid}`,kind:l.autoKind,sid:l.sid,amount:l.amt,date:l.d,memo:l.label,at:now(),by:acBy()},"ข้ามรายการแล้ว");
+  if(ok)logEv("ข้ามรายการอัตโนมัติ",`${kn} ${acM(l.amt)} ฿ · ${l.label}`);return true;
+}
+/* confirm moving the start day back to the first round the app has */
+async function acMoveAsk(){
+  const info=acSyncInfo();if(!info.pre.length){toast("ไม่มีรอบเล่นก่อนวันเริ่มทำบัญชี");return true;}
+  if(!await askConfirm({title:"ซิงก์รอบก่อนวันเริ่มทำบัญชี",ok:"ซิงก์เลย",body:`<p>รอบเล่นก่อนวันเริ่มทำบัญชี (${esc(fmtD(info.start))}): <b>${info.pre.length} รอบ</b> (ตั้งแต่ ${esc(fmtD(info.first))})</p><p>ระบบจะอ่านรอบเหล่านี้ นำรายรับจากผู้เล่น ค่าเช่าสนาม ต้นทุนลูกแบด และค่าใช้จ่ายอื่นเข้าสมุดบัญชี แล้วย้ายวันเริ่มเป็น <b>${esc(fmtD(info.first))}</b></p><p class="small muted">ยอดเงินคงเหลือของทุกบัญชีตอนนี้ไม่เปลี่ยน — ระบบปรับยอดยกมาให้เอง (อาจแสดงเป็นยอดคำนวณย้อนหลัง) · ถ้ามีเงินที่ไม่เคยอยู่ในแอป ให้ใช้ “บันทึกยอดจริง” ตรวจทีหลัง</p>`}))return true;
+  acMoveStart(info.first).then(ok=>{if(ok)toast("ซิงก์ประวัติย้อนหลังแล้ว");});return true;
+}
 /* ---- Excel ---- */
 async function exportAcct(){
   if(!window.XLSX){try{await loadScript("lib/xlsx.full.min.js");}catch(e){}}
   if(!window.XLSX){toast("ตัวสร้างไฟล์ Excel โหลดไม่สำเร็จ — ต้องออนไลน์ครั้งแรก");return;}
   const X=XLSX.utils,wb=X.book_new(),book=acBook(),r=acRange(acPer),P=acPnl(book,r.from,r.to),R=acReceivables(),Y=acPayables(),F=acFunds(book),n2=v=>acR(v);
   const inc=book.inc.filter(x=>x.d>=r.from&&x.d<=r.to),exp=book.exp.filter(x=>x.d>=r.from&&x.d<=r.to);
-  const rows=[["งบกำไร–ขาดทุน",r.label],[],["รายรับ"],...["member","guest","sponsor","shuttleFee","shuttleSale","noshow","other","adjIn"].map(k=>[AC_INC_NAME[k],n2(P.inc[k]||0)]),["รวมรายรับ",P.ti],[],["รายจ่าย"],...AC_EXP.map(([k,t])=>[t,n2(P.exp[k]||0)]),["ปรับปรุงยอด (เงินขาด)",n2(P.exp.adjOut||0)],["รวมรายจ่าย",P.te],[],[P.net>=0?"กำไร / เงินเหลือสุทธิ":"ขาดทุนสุทธิ",P.net]];
+  const rows=[["งบกำไร–ขาดทุน",r.label],[],["รายรับ"],...["member","guest","sponsor","shuttleFee","shuttleSale","noshow","other","adjIn"].map(k=>[AC_INC_NAME[k],n2(P.inc[k]||0)]),["รวมรายรับ",P.ti],[],["รายจ่าย"],...AC_EXP.map(([k,t])=>[t,n2(P.exp[k]||0)]),["ปรับปรุงยอด (เงินขาด)",n2(P.exp.adjOut||0)],["รวมรายจ่าย",P.te],...(P.stock>0?[["ซื้อลูกแบดเข้าสต็อก (เงินออกจากบัญชี ไม่นับเป็นต้นทุน)",P.stock]]:[]),[],[P.net>=0?"กำไร / เงินเหลือสุทธิ":"ขาดทุนสุทธิ",P.net]];
   X.book_append_sheet(wb,X.aoa_to_sheet(rows),"กำไรขาดทุน");
   X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","ประเภท","จาก / รอบ","บัญชี","รายละเอียด","จำนวน (฿)"],...inc.map(x=>[x.d,AC_INC_NAME[x.cat]||x.cat,x.auto?x.label:(x.from||""),acAcct(book,x.acct),x.auto?(x.m==="transfer"?"รับโอน":"เงินสด"):x.label,x.amt])]),"รายรับ");
-  X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","หมวด","จ่ายให้","บัญชี","สถานะ","รายละเอียด","จำนวน (฿)"],...exp.map(x=>[x.d,AC_EXP_NAME[x.cat]||x.cat,x.payee||"",x.adv?"ผู้จัดสำรองจ่าย":acAcct(book,x.acct),x.adv?"สำรองจ่าย":x.fund?"จ่ายจากกองกลาง":"จ่ายแล้ว",x.label,x.amt])]),"รายจ่าย");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่","หมวด","จ่ายให้","บัญชี","สถานะ","รายละเอียด","จำนวน (฿)"],...exp.map(x=>[x.d,x.stock?AC_EXP_NAME.stock:(AC_EXP_NAME[x.cat]||x.cat),x.payee||"",x.adv?"ผู้จัดสำรองจ่าย":acAcct(book,x.acct),x.adv?"สำรองจ่าย":x.auto?(x.cash?"อัตโนมัติ · จ่ายแล้ว":"อัตโนมัติ · ตามที่ใช้ (ไม่หักบัญชี)"):x.stock?"ซื้อเข้าสต็อก (ไม่นับเป็นต้นทุน)":x.fund?"จ่ายจากกองกลาง":"จ่ายแล้ว",x.auto?`รอบ ${x.label}`:x.label,x.amt])]),"รายจ่าย");
+  X.book_append_sheet(wb,X.aoa_to_sheet([["วันที่รอบ","รอบ","รับจากผู้เล่น","ค่าเช่าสนาม","ลูกแบดที่ใช้","ค่าใช้จ่ายอื่นของรอบ","สถานะซิงก์"],...acRoundRows(book).map(q=>[q.s.date,q.s.title||"รอบเล่น",q.rc,q.rent==null?"":q.rent,q.use==null?"":q.use,q.oth==null?"":q.oth,q.live?"ซิงก์สด":q.detail?"ซิงก์แล้ว":"ยังไม่ได้อ่านรายละเอียด"])]),"รอบที่ซิงก์");
   const counts=acItems("cnt");
   X.book_append_sheet(wb,X.aoa_to_sheet([["บัญชี","ประเภท","ยอดยกมา","ต้นงวด","เงินรับ","เงินจ่าย","ปลายงวด (สมุด)","ยอดจริงล่าสุด","วันที่นับ","ผลต่าง"],...book.accs.map(a=>{const f=acFlow(book,a.id,r.from,r.to),c=counts.filter(x=>x.acct===a.id&&x.date<=r.to).sort((x,y)=>y.date.localeCompare(x.date)||(y.at||0)-(x.at||0))[0];
     return [a.name,AC_KIND[a.kind]||"",a.opening||0,f.open+f.opened,f.inn,f.out,f.close,c?c.amount:"",c?c.date:"",c?n2(c.amount-acBal(book,a.id,c.date)):""];})]),"เงินสด-ธนาคาร-ตรวจสอบยอด");
@@ -1374,16 +1522,109 @@ function acAct(a,id,b){
     case "acDebtPay":{const [pid,sid]=(id||"").split("|"),e=debtLedger().find(q=>q.pid===pid&&q.sid===sid);if(!e){toast("ยอดค้างนี้ถูกปิดแล้ว");return true;}return dlgDebtPay(e);}
     case "acGoMoney":if(id&&id!==S.sid)selectSession(id);tab="money";try{localStorage.setItem(uiKey("bgo-tab"),tab);}catch(_){}render();window.scrollTo(0,0);return true;
     case "acExport":return exportAcct();
+    case "acSync":{const g=acSyncInfo().gaps;if(!g.length){toast("ซิงก์ครบแล้ว — ไม่มีรอบที่ค้างอ่าน");return true;}
+      acSweep(g).then(r=>{toast(r.fail?`ซิงก์ไม่สำเร็จ ${r.fail} รอบ — ลองอีกครั้ง`:r.cancelled?"หยุดซิงก์แล้ว":`ซิงก์แล้ว ${r.done} รอบ`);});return true;}
+    case "acSyncStop":if(acRun)acRun.cancel=true;return true;
+    case "acMove":return acMoveAsk();
+    case "acAutoSet":{const [k,v]=(id||"").split("|"),meta=S.acctMeta||{},au=acAuto();if(!["rent","use","other","pay"].includes(k))return true;
+      write("private/acct/meta/main",{...stripId(meta),auto:{...au,[k]:k==="pay"?(v==="transfer"?"transfer":"cash"):v==="1"}},"บันทึกแล้ว");return true;}
+    case "acAutoEdit":{const [sid,kind]=(id||"").split("|"),l=acBook().exp.find(x=>x.auto&&x.sid===sid&&x.autoKind===kind);if(!l||kind==="use")return true;
+      return dlgAcExpense({mode:"paid",cat:l.cat,amount:l.amt,date:l.d,memo:l.label,ref:(kind==="rent"?"rent:":"oth:")+sid});}
+    case "acAutoSkip":{const [sid,kind]=(id||"").split("|"),l=acBook().exp.find(x=>x.auto&&x.sid===sid&&x.autoKind===kind);if(!l)return true;
+      return acSkip(l);}
+    case "acUnskip":return acRemove(id).then(ok=>{if(ok)toast("เอารายการกลับเข้าบัญชีแล้ว");return true;});
   }
   return undefined;
+}
+/* ---- reading rounds the books have not seen: receipts, shuttles used and who still owes — the round's own documents are read, nothing in them is changed ---- */
+async function acReadRound(s){
+  const p=`sessions/${s.id}`,[roster,matches,decisions,pay,seen]=await Promise.all(["roster","matches","decisions","pay","seen"].map(n=>readCol(`${p}/${n}`)));
+  const keep={sid:S.sid,roster:S.roster,matches:S.matches,decisions:S.decisions,pay:S.pay,seen:S.seen,seenLoaded:S.seenLoaded,prep:S.prep};
+  try{                                                        // the models read the open round from S: put this round there for a moment (no await in between)
+    Object.assign(S,{sid:s.id,roster:roster||[],matches:matches||[],decisions:decisions||[],pay:pay||[],seen:seen||[],seenLoaded:true,prep:null});
+    const pm=payModel(),ros=rosterModel();
+    return {rc:acReceiptsOfPay(pm,ros,s.date),ow:pm.rows.filter(r=>r.owe>0&&r.due>0).map(r=>({pid:r.id,name:r.name,due:r.due,owe:acR(r.owe),state:r.state})),use:acR(pm.pnl.costNew+pm.pnl.costRepair)};
+  }finally{Object.assign(S,keep);}
+}
+let acRun=null,acNext=0;        // acRun = {i,n,fail,cancel} while rounds are being read
+/* read every round in list once and keep what the books need on the round (acRc / acOw / acUse). Works through the rounds one by one; cancel = acRun.cancel */
+async function acSweep(list,onStep){
+  if(acRun)return {done:0,fail:0,cancelled:true,busy:true};
+  list=(list||[]).filter(Boolean);if(!list.length)return {done:0,fail:0,cancelled:false};
+  acRun={i:0,n:list.length,fail:0,cancel:false};let done=0;render();
+  try{
+    for(const s0 of list){
+      if(acRun.cancel)break;
+      acRun.i++;if(onStep)onStep(acRun.i,acRun.n);render();
+      try{
+        const s=S.sessions.find(x=>x.id===s0.id)||s0;
+        if(acRoundDetail(s)){done++;continue;}
+        const r=await acReadRound(s),cur=(await readDoc(`sessions/${s.id}`))||stripId(s),o={...cur};delete o.id;
+        o.acRc=r.rc;o.acUse=r.use;if(s.status!=="closed")o.acOw=r.ow;
+        if(await write(`sessions/${s.id}`,o)){Object.assign(s,{acRc:o.acRc,acUse:o.acUse});if(o.acOw)s.acOw=o.acOw;done++;}else acRun.fail++;
+      }catch(e){acRun.fail++;}
+    }
+  }finally{
+    var res={done,fail:acRun?acRun.fail:0,cancelled:!!(acRun&&acRun.cancel)};acRun=null;acNext=now()+(res.fail?600000:120000);render();
+  }
+  return res;
+}
+/* looks every couple of minutes whether a round is missing in the books and reads it (called after every paint) */
+function acAutoRun(){
+  if(acRun||!DB.isOrg||!acOn()||!S._sessLoaded||now()<acNext)return;
+  acNext=now()+120000;const g=acSyncInfo().gaps;if(!g.length)return;
+  acSweep(g).catch(()=>{});
+}
+/* rounds from before the start day come into the books: the start day moves back, and the opening balances move with it so that every account keeps the balance it has now */
+async function acMoveStart(newStart){
+  const meta=S.acctMeta||{};if(!acOn()||!/^\d{4}-\d\d-\d\d$/.test(newStart||"")||newStart>=meta.start)return false;
+  const accs=acAccounts();
+  let targets=meta.pendingMove&&meta.pendingMove.start===newStart?meta.pendingMove.targets:null;       // a move that was interrupted: continue with the balances noted then
+  if(!targets){const b=acBook();targets={};accs.forEach(a=>{targets[a.id]=acBal(b,a.id);});
+    if(!await write("private/acct/meta/main",{...stripId(meta),pendingMove:{start:newStart,targets}}))return false;}
+  const gaps=acWithTemp({...meta,start:newStart},null,()=>acSyncInfo()).gaps;
+  const res=await acSweep(gaps);
+  if(res.cancelled||res.fail){toast("อ่านรอบเล่นย้อนหลังไม่ครบ — กดซิงก์อีกครั้ง (ยอดเงินในบัญชียังไม่ถูกเปลี่ยน)");return false;}
+  const m1=S.acctMeta||meta,maps=(Array.isArray(m1.maps)?m1.maps:[]).map(m=>m.from===m1.start?{...m,from:newStart}:m);
+  const m2={...stripId(m1),start:newStart,maps};delete m2.pendingMove;
+  const bal=acWithTemp(m2,null,()=>{const b=acBook(),o={};accs.forEach(a=>{o[a.id]=acBal(b,a.id);});return o;});
+  for(const a of accs){
+    const d=acR((targets[a.id]||0)-bal[a.id]),u={...stripId(a)};let ch=false;
+    if(d!==0){u.opening=acR((+a.opening||0)+d);u.plug=true;ch=true;}
+    if((a.openDate||"")<=m1.start&&a.openDate!==newStart){u.openDate=newStart;ch=true;}
+    if(ch&&!await acPut(a.id,u))return false;}
+  const ok=await write("private/acct/meta/main",m2,"ซิงก์ประวัติย้อนหลังเข้าสมุดบัญชีแล้ว");
+  if(ok)logEv("ซิงก์ประวัติย้อนหลัง",`ย้ายวันเริ่มทำบัญชีเป็น ${fmtD(newStart)}`);
+  return ok;
+}
+/* the price paid when shuttles / supplies are added to the stock goes to the books as a purchase (money out of an account) */
+function acStockFields(){
+  if(!DB.isOrg||!acOn())return "";
+  const book=acBook();
+  return `<div class="fg" style="margin-top:6px">${decIn("price","ราคาที่จ่ายซื้อ (฿ รวม) ไม่บังคับ","",0,100000000)}${acAccSel("acct",acMapNow(book,"cash"),"จ่ายจากบัญชี")}</div><p class="small muted" style="margin:6px 0 0">ใส่ราคาแล้วระบบลงบัญชีให้เอง (เงินออกจากบัญชีที่เลือก) — ไม่ใส่ก็ได้</p>`;
+}
+/* check the price + balance BEFORE the stock changes: returns {price,acct} or false */
+async function acStockCheck(f){
+  if(!f.elements.price)return {price:0,acct:""};
+  const price=checkDec(f,"price",false);if(price===false)return false;
+  if(!(price>0))return {price:0,acct:""};
+  const acct=fv(f,"acct");if(!await acEnough(acct,price))return false;
+  return {price,acct};
+}
+async function acStockPut(chk,cat,memo){
+  if(!chk||!(chk.price>0))return true;
+  const ok=await acPut(uid("e"),{t:"exp",cat,amount:chk.price,date:acToday(),acct:chk.acct,payee:"",memo,at:now(),by:acBy()},"บันทึกค่าซื้อลงบัญชีแล้ว");
+  if(!ok)toast("เพิ่มสต็อกแล้ว แต่ลงบัญชีค่าซื้อไม่สำเร็จ — บันทึกเองที่เมนูบัญชี > รายจ่าย");
+  else logEv("ซื้อของเข้าสต็อก",`${memo} ${acM(chk.price)} ฿`);
+  return ok;
 }
 /* the receipts of the OPEN round are copied onto the round itself (acRc): the books keep them when the organizer moves on to another round before closing this one */
 let acSnapTimer=null;
 function acSnapOpen(flush){
   const run=()=>{const s=curSession();if(!s||!DB.isOrg||!acOn()||s.status==="closed"||!s.date)return;
-    const pm=payModel(),rc=acReceiptsOfPay(pm,rosterModel(),s.date),ow=pm.rows.filter(r=>r.owe>0&&r.due>0).map(r=>({pid:r.id,name:r.name,due:r.due,owe:acR(r.owe),state:r.state}));
-    if(JSON.stringify(s.acRc||null)===JSON.stringify(rc)&&JSON.stringify(s.acOw||null)===JSON.stringify(ow))return;
-    return write(`sessions/${s.id}`,{...stripId(s),acRc:rc,acOw:ow});};
+    const pm=payModel(),rc=acReceiptsOfPay(pm,rosterModel(),s.date),ow=pm.rows.filter(r=>r.owe>0&&r.due>0).map(r=>({pid:r.id,name:r.name,due:r.due,owe:acR(r.owe),state:r.state})),use=acR(pm.pnl.costNew+pm.pnl.costRepair);
+    if(JSON.stringify(s.acRc||null)===JSON.stringify(rc)&&JSON.stringify(s.acOw||null)===JSON.stringify(ow)&&s.acUse===use)return;
+    return write(`sessions/${s.id}`,{...stripId(s),acRc:rc,acOw:ow,acUse:use});};
   if(flush){clearTimeout(acSnapTimer);acSnapTimer=null;try{run();}catch(e){}return;}
   if(acSnapTimer)return;acSnapTimer=setTimeout(()=>{acSnapTimer=null;try{run();}catch(e){}},2000);
 }
@@ -1782,21 +2023,27 @@ function dlgShuttleIn(kind){
   const nw=kind==="new",flag=nw?"shuttle":"repair",it=((S.inv&&S.inv.items)||[]).find(i=>i[flag]);
   openDlg(`<form novalidate><h2>เพิ่ม${nw?"ลูกใหม่":"ลูกซ่อม"}เข้าสต็อก</h2>
     <p class="small" style="margin:0 0 8px">${nw?"ลูกใหม่ = ลูกจริงที่ซื้อมา (คิดเงินผู้เล่นเมื่อใช้)":"ลูกซ่อม = ลูกที่ซ่อม/คัดกลับมาใช้ (ไม่คิดเงินผู้เล่น)"} · ตอนนี้คงเหลือ <b>${it?Math.max(0,it.total-it.used):0}</b> ลูก</p>
-    <div class="fg">${intIn("n","จำนวนที่เพิ่ม (ลูก)",nw?12:6,1,100000)}</div>
+    <div class="fg">${intIn("n","จำนวนที่เพิ่ม (ลูก)",nw?12:6,1,100000)}</div>${acStockFields()}
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">เพิ่มเข้าสต็อก</button></div></form>`,async f=>{
     const n=checkInt(f,"n",true);if(n===false)return false;
+    const chk=await acStockCheck(f);if(!chk)return false;
     const inv=(S.inv&&S.inv.items)||[],cur=inv.find(i=>i[flag]);
     const items=cur?inv.map(i=>i.id===cur.id?{...i,total:i.total+n}:i):[...inv,{id:uid("i"),name:nw?"ลูกแบด (ใหม่)":"ลูกซ่อม",unit:"ลูก",total:n,used:0,threshold:nw?12:0,[flag]:true}];
     const ok=await write("inventory/main",{...(S.inv||{}),items},`เพิ่ม${nw?"ลูกใหม่":"ลูกซ่อม"} ${n} ลูกแล้ว — คงเหลือ ${items.find(i=>i[flag]).total-items.find(i=>i[flag]).used} ลูก`);
-    if(ok)logEv("เพิ่มสต็อก"+(nw?"ลูกใหม่":"ลูกซ่อม"),`+${n} ลูก`);return ok;});
+    if(ok){logEv("เพิ่มสต็อก"+(nw?"ลูกใหม่":"ลูกซ่อม"),`+${n} ลูก`);await acStockPut(chk,"stock",TT(nw?"ซื้อลูกแบดใหม่":"ซื้อลูกซ่อม")+` × ${n}`);}return ok;});
 }
 function dlgStock(it,mode){
+  const shut=!!(it.shuttle||it.repair),dcat=/น้ำ/.test(it.name||"")?"water":"equip";
   openDlg(`<form novalidate><h2>${mode==="add"?"รับเข้า":"เบิกใช้"} · ${esc(it.name)}</h2><div class="fg">${intIn("n","จำนวน",mode==="add"?12:1,1,10000)}</div>
+    ${mode==="add"?`${acStockFields()}${!shut&&acOn()&&DB.isOrg?`<div class="fg"><label class="f full">ลงบัญชีเป็นหมวด<select name="scat">${[["water","ค่าน้ำดื่ม"],["equip","ค่าอุปกรณ์ส่วนกลาง"],["other","ค่าใช้จ่ายอื่น ๆ ของก๊วน"]].map(([k,t])=>`<option value="${k}"${k===dcat?" selected":""}>${t}</option>`).join("")}</select></label></div>`:""}`:""}
     <div class="dlg-a"><button type="button" class="ghost" data-close>ยกเลิก</button><button type="submit" class="primary">บันทึก</button></div></form>`,async f=>{
     const n=checkInt(f,"n",true);if(n===false)return false;
     if(mode!=="add"&&it.used+n>it.total)return fieldErr(f,"n",`คงเหลือแค่ ${it.total-it.used}`);
+    const chk=mode==="add"?await acStockCheck(f):{price:0,acct:""};if(!chk)return false;
     const items=S.inv.items.map(i=>i.id===it.id?{...i,total:mode==="add"?i.total+n:i.total,used:mode==="add"?i.used:i.used+n}:i);
-    return write("inventory/main",{...S.inv,items},"บันทึกแล้ว");
+    const ok=await write("inventory/main",{...S.inv,items},"บันทึกแล้ว");
+    if(ok&&mode==="add")await acStockPut(chk,shut?"stock":(f.elements.scat?fv(f,"scat"):"equip"),`${TT("ซื้อ")} ${it.name} ${n} ${it.unit||""}`.trim());
+    return ok;
   });
 }
 function dlgCosts(){

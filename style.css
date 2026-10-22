@@ -611,6 +611,7 @@ textarea[name=reason],textarea[name=msg]{width:100%;resize:vertical;min-height:4
 .accard .big{font-family:var(--font-display);font-weight:700;font-style:italic;font-size:1.7rem;font-variant-numeric:tabular-nums;line-height:1.15;color:var(--accent)}.accard .big small{font-size:.9rem;font-style:normal;color:var(--muted)}
 .accard .acts{display:flex;flex-wrap:wrap;gap:6px}
 .accard .tw{margin:0 -4px}
+.acset{display:grid;gap:8px;padding:10px 0;border-top:1px dashed var(--line);min-width:0}.acset:first-child{border-top:0}.acset .m{display:grid;min-width:0}.acset .m .small{overflow-wrap:anywhere}
 .actbl th[colspan]{padding-top:14px;text-align:left}
 .actbl td:first-child{white-space:normal;overflow-wrap:anywhere}
 .actbl tr.tot td{border-top:2px solid var(--line);border-bottom:0}
